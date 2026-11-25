@@ -218,7 +218,7 @@ async function analyze() {
   const address = $('addressInput').value.trim();
   const mode = detectMode(address, $('chainMode').value);
   $('formError').textContent = '';
-  if (mode === 'invalid' || (mode === 'evm' && !isEvm(address)) || (mode === 'sol' && !isSolana(address))) { $('formError').textContent = 'Format contract address tidak valid untuk mode yang dipilih.'; return; }
+  if (mode === 'invalid' || (mode === 'evm' && !isEvm(address)) || (mode === 'sol' && !isSolana(address))) { $('formError').textContent = 'Format alamat tidak dikenali. Masukkan alamat kontrak EVM (0x…) atau alamat Solana base58.'; return; }
   $('analyzeBtn').disabled = true; $('analyzeBtn').textContent = 'Analyzing...';
   try {
     const res = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + encodeURIComponent(address));
