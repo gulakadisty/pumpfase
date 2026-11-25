@@ -22,16 +22,18 @@ function firstValue(obj, keys) { for (const key of keys) { if (obj && obj[key] !
 
 async function fetchSecurity(pair, address, mode) {
   try {
+    const headers = { accept: 'application/json', 'user-agent': 'Pumpfase/1.0' };
     if (mode === 'sol') {
-      const res = await fetch('https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=' + encodeURIComponent(address));
+      const res = await fetch('https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=' + encodeURIComponent(address), { headers });
       const json = await res.json();
       return json?.result?.[address] || null;
     }
     const chainId = EVM_CHAIN_IDS[pair.chainId];
     if (!chainId) return null;
-    const res = await fetch('https://api.gopluslabs.io/api/v1/token_security/' + chainId + '?contract_addresses=' + encodeURIComponent(address));
+    const lowerAddress = address.toLowerCase();
+    const res = await fetch('https://api.gopluslabs.io/api/v1/token_security/' + chainId + '?contract_addresses=' + encodeURIComponent(lowerAddress), { headers });
     const json = await res.json();
-    return json?.result?.[address.toLowerCase()] || json?.result?.[address] || null;
+    return json?.result?.[lowerAddress] || json?.result?.[address] || null;
   } catch { return null; }
 }
 
