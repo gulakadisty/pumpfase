@@ -42,12 +42,13 @@ async function fetchSecurity(pair, address, mode) {
   } catch { return null; }
 }
 
+function pctValue(value) { const n = num(value, NaN); return Number.isFinite(n) ? (n <= 1 ? n * 100 : n) : NaN; }
 function normalizeHolders(security) {
   const holders = security?.holders || security?.holder || [];
   if (!Array.isArray(holders)) return [];
   return holders.map((h) => ({
     address: firstValue(h, ['address', 'holder_address', 'wallet']) || '',
-    percent: num(firstValue(h, ['percent', 'percentage', 'balance_percent', 'share']), NaN),
+    percent: pctValue(firstValue(h, ['percent', 'percentage', 'balance_percent', 'share'])),
     isContract: boolValue(firstValue(h, ['is_contract', 'isContract', 'contract'])),
     isLocked: boolValue(firstValue(h, ['is_locked', 'isLocked', 'locked']))
   })).filter((h) => Number.isFinite(h.percent));
@@ -63,7 +64,7 @@ function securityFacts(security) {
   const bundleHolders = sortedNonContract.length && sortedNonContract[0].percent > 5 ? sortedNonContract.slice(1) : sortedNonContract;
   const bundleSharePct = bundleHolders.length ? bundleHolders.reduce((sum, h) => sum + h.percent, 0) : null;
   const bundleWalletCount = bundleHolders.length;
-  const creatorPctRaw = num(firstValue(security, ['creator_percent', 'creatorPercent', 'owner_percent']), NaN);
+  const creatorPctRaw = pctValue(firstValue(security, ['creator_percent', 'creatorPercent', 'owner_percent']));
   const creatorPct = Number.isFinite(creatorPctRaw) ? creatorPctRaw : null;
   const honeypot = boolValue(firstValue(security, ['is_honeypot', 'honeypot'])) === true;
   const cannotSellAll = boolValue(firstValue(security, ['cannot_sell_all', 'cannotSellAll'])) === true;
