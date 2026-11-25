@@ -4,20 +4,28 @@ const EVM_CHAIN_IDS = { ethereum: 1, bsc: 56, base: 8453, polygon: 137, arbitrum
 let currentPairs = [];
 let currentSecurity = null;
 let currentAddress = '';
+let currentMode = 'auto';
 
 function clamp(value, min = 0, max = 100) { return Math.max(min, Math.min(max, value)); }
 function num(value, fallback = 0) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
 function money(value) { const n = num(value); if (!n) return '$0'; if (n < 0.01) return '$' + n.toFixed(8); return '$' + n.toLocaleString('en-US', { maximumFractionDigits: n < 1 ? 6 : 2 }); }
 function compact(value) { return '$' + num(value).toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 2 }); }
 function pct(value) { const n = num(value); return (n > 0 ? '+' : '') + n.toFixed(2) + '%'; }
+function pctPlain(value) { const n = num(value); return Number.isFinite(n) ? n.toFixed(2) + '%' : 'Tidak tersedia'; }
+function shortAddress(address) { const s = String(address || ''); return s.length > 14 ? s.slice(0, 6) + '…' + s.slice(-4) : s; }
 function ageText(pair) { if (!pair.pairCreatedAt) return 'Unknown'; const days = Math.max(0, (Date.now() - pair.pairCreatedAt) / 86400000); return days < 1 ? Math.round(days * 24) + 'h' : days.toFixed(days < 10 ? 1 : 0) + 'd'; }
+function ageDays(pair) { return pair.pairCreatedAt ? Math.max(0, (Date.now() - pair.pairCreatedAt) / 86400000) : 0; }
 function isEvm(address) { return /^0x[a-fA-F0-9]{40}$/.test(address); }
 function isSolana(address) { return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address) && !address.startsWith('0x'); }
 function detectMode(address, selected) { if (selected !== 'auto') return selected; if (isEvm(address)) return 'evm'; if (isSolana(address)) return 'sol'; return 'invalid'; }
 function logScore(value, points) { const v = Math.max(0, num(value)); for (let i = 1; i < points.length; i++) { const [x2, y2] = points[i]; const [x1, y1] = points[i - 1]; if (v <= x2) return y1 + (y2 - y1) * ((Math.log10(v + 1) - Math.log10(x1 + 1)) / (Math.log10(x2 + 1) - Math.log10(x1 + 1))); } return points[points.length - 1][1]; }
 function changeScore(change) { return clamp(50 + num(change) * 1.1); }
-function buyPressure(pair) { const tx = pair.txns?.h24 || {}; const buys = num(tx.buys); const sells = num(tx.sells); return buys + sells ? (buys / (buys + sells)) * 100 : 50; }
-function slippage(pair, trade) { const liq = num(pair.liquidity?.usd); if (!liq) return 'Tidak bisa'; return (trade / (liq + trade) * 100).toFixed(2) + '%'; }
+function txns(pair, key) { const tx = pair.txns?.[key] || {}; return { buys: num(tx.buys), sells: num(tx.sells) }; }
+function buyPressure(pair) { const tx = txns(pair, 'h24'); return tx.buys + tx.sells ? (tx.buys / (tx.buys + tx.sells)) * 100 : 50; }
+function slippageImpact(pair, trade) { const liq = num(pair.liquidity?.usd); if (!liq) return null; return trade / (liq + trade) * 100; }
+function slippageText(pair, trade) { const impact = slippageImpact(pair, trade); return impact === null ? 'Tidak bisa' : impact.toFixed(impact < 0.01 ? 3 : 2) + '%'; }
+function boolValue(value) { if (value === true || value === 1) return true; if (value === false || value === 0) return false; const s = String(value ?? '').toLowerCase(); if (s === '1' || s === 'true' || s === 'yes') return true; if (s === '0' || s === 'false' || s === 'no') return false; return null; }
+function firstValue(obj, keys) { for (const key of keys) { if (obj && obj[key] !== undefined && obj[key] !== null && obj[key] !== '') return obj[key]; } return null; }
 
 async function fetchSecurity(pair, address, mode) {
   try {
@@ -34,20 +42,51 @@ async function fetchSecurity(pair, address, mode) {
   } catch { return null; }
 }
 
+function normalizeHolders(security) {
+  const holders = security?.holders || security?.holder || [];
+  if (!Array.isArray(holders)) return [];
+  return holders.map((h) => ({
+    address: firstValue(h, ['address', 'holder_address', 'wallet']) || '',
+    percent: num(firstValue(h, ['percent', 'percentage', 'balance_percent', 'share']), NaN),
+    isContract: boolValue(firstValue(h, ['is_contract', 'isContract', 'contract'])),
+    isLocked: boolValue(firstValue(h, ['is_locked', 'isLocked', 'locked']))
+  })).filter((h) => Number.isFinite(h.percent));
+}
+
 function securityFacts(security) {
-  if (!security) return { available: false, honeypot: false, creatorPct: null, top10Pct: null, mintable: null, notes: ['GoPlus data tidak tersedia untuk pair ini.'] };
-  const holders = security.holders || security.holder || [];
-  const top10Pct = Array.isArray(holders) ? holders.slice(0, 10).reduce((sum, h) => sum + num(h.percent ?? h.percentage ?? h.balance_percent), 0) : null;
-  const creatorPct = num(security.creator_percent ?? security.creatorPercent ?? security.owner_percent, NaN);
-  const honeypot = String(security.is_honeypot ?? security.honeypot ?? '') === '1' || security.is_honeypot === true;
-  const mintable = String(security.is_mintable ?? security.mintable ?? '') === '1' || security.is_mintable === true;
+  if (!security) return { available: false, honeypot: false, cannotSellAll: false, creatorPct: null, creatorAddress: '', ownerAddress: '', top10Pct: null, top10NonContractPct: null, bundleSharePct: null, bundleWalletCount: 0, holderCount: null, mintable: null, proxy: null, openSource: null, buyTaxPct: null, sellTaxPct: null, mintAuthorityActive: null, freezeAuthorityActive: null, topHolders: [], notes: ['GoPlus data tidak tersedia untuk pair ini.'] };
+  const topHolders = normalizeHolders(security).slice(0, 10);
+  const top10Pct = topHolders.length ? topHolders.reduce((sum, h) => sum + h.percent, 0) : null;
+  const nonContract = topHolders.filter((h) => h.isContract !== true && h.isLocked !== true);
+  const top10NonContractPct = nonContract.length ? nonContract.reduce((sum, h) => sum + h.percent, 0) : null;
+  const sortedNonContract = [...nonContract].sort((a, b) => b.percent - a.percent);
+  const bundleSharePct = sortedNonContract.length > 1 ? sortedNonContract.slice(1).reduce((sum, h) => sum + h.percent, 0) : null;
+  const bundleWalletCount = sortedNonContract.length > 1 ? sortedNonContract.length - 1 : 0;
+  const creatorPctRaw = num(firstValue(security, ['creator_percent', 'creatorPercent', 'owner_percent']), NaN);
+  const creatorPct = Number.isFinite(creatorPctRaw) ? creatorPctRaw : null;
+  const honeypot = boolValue(firstValue(security, ['is_honeypot', 'honeypot'])) === true;
+  const cannotSellAll = boolValue(firstValue(security, ['cannot_sell_all', 'cannotSellAll'])) === true;
+  const mintable = boolValue(firstValue(security, ['is_mintable', 'mintable']));
+  const proxy = boolValue(firstValue(security, ['is_proxy', 'proxy']));
+  const openSource = boolValue(firstValue(security, ['is_open_source', 'open_source', 'openSource']));
+  const buyTaxRaw = num(firstValue(security, ['buy_tax', 'buyTax']), NaN);
+  const sellTaxRaw = num(firstValue(security, ['sell_tax', 'sellTax']), NaN);
+  const buyTaxPct = Number.isFinite(buyTaxRaw) ? buyTaxRaw * 100 : null;
+  const sellTaxPct = Number.isFinite(sellTaxRaw) ? sellTaxRaw * 100 : null;
+  const mintAuthority = firstValue(security, ['mint_authority', 'mintAuthority']);
+  const freezeAuthority = firstValue(security, ['freeze_authority', 'freezeAuthority']);
+  const mintAuthorityActive = mintAuthority === null ? mintable : String(mintAuthority).length > 0 && String(mintAuthority) !== 'null';
+  const freezeAuthorityActive = freezeAuthority === null ? null : String(freezeAuthority).length > 0 && String(freezeAuthority) !== 'null';
+  const holderCountRaw = num(firstValue(security, ['holder_count', 'holderCount', 'holders_count']), NaN);
   const notes = [];
   if (honeypot) notes.push('GoPlus menandai potensi honeypot.');
-  if (Number.isFinite(creatorPct)) notes.push('Creator/owner share sekitar ' + creatorPct.toFixed(2) + '%.');
-  if (top10Pct) notes.push('Top holder concentration sekitar ' + top10Pct.toFixed(2) + '%.');
+  if (cannotSellAll) notes.push('GoPlus menandai token tidak bisa dijual seluruhnya.');
+  if (creatorPct !== null) notes.push('Creator hanya memegang ' + creatorPct.toFixed(2) + '% supply — konsentrasi creator ' + (creatorPct > 20 ? 'tinggi' : 'rendah') + '.');
+  if (top10Pct) notes.push('Top 10 holder menguasai ' + top10Pct.toFixed(1) + '% supply.');
+  if (bundleSharePct) notes.push('Indikasi bundle: ±' + bundleSharePct.toFixed(1) + '% supply di wallet non-kontrak berukuran mirip (heuristik).');
   if (mintable) notes.push('Mint authority masih aktif menurut GoPlus.');
   if (!notes.length) notes.push('Tidak ada red flag besar dari data GoPlus yang tersedia.');
-  return { available: true, honeypot, creatorPct: Number.isFinite(creatorPct) ? creatorPct : null, top10Pct, mintable, notes };
+  return { available: true, honeypot, cannotSellAll, creatorPct, creatorAddress: firstValue(security, ['creator_address', 'creatorAddress']) || '', ownerAddress: firstValue(security, ['owner_address', 'ownerAddress']) || '', top10Pct, top10NonContractPct, bundleSharePct, bundleWalletCount, holderCount: Number.isFinite(holderCountRaw) ? holderCountRaw : null, mintable, proxy, openSource, buyTaxPct, sellTaxPct, mintAuthorityActive, freezeAuthorityActive, topHolders, notes };
 }
 
 function scorePair(pair, pairs, security) {
@@ -55,58 +94,111 @@ function scorePair(pair, pairs, security) {
   const liquidity = num(pair.liquidity?.usd);
   const fdv = num(pair.fdv || pair.marketCap);
   const liqRatio = fdv ? liquidity / fdv : 0;
-  const volume24 = num(pair.volume?.h24);
-  const h1 = num(pair.priceChange?.h1); const h6 = num(pair.priceChange?.h6); const h24 = num(pair.priceChange?.h24);
-  const ageDays = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 86400000 : 0;
-  let liquidityScore = logScore(liquidity, [[0,0],[1000,20],[10000,45],[100000,70],[1000000,90],[10000000,100]]);
+  const volumeH1 = num(pair.volume?.h1); const volumeH6 = num(pair.volume?.h6); const volume24 = num(pair.volume?.h24);
+  const m5 = num(pair.priceChange?.m5); const h1 = num(pair.priceChange?.h1); const h6 = num(pair.priceChange?.h6); const h24 = num(pair.priceChange?.h24);
+  const tx24 = txns(pair, 'h24'); const pressure = buyPressure(pair);
+  const age = ageDays(pair);
+  const turnover = liquidity ? volume24 / liquidity : 0;
+
+  let liquidityScore = logScore(liquidity, [[0,0],[1000,20],[10000,45],[100000,70],[1000000,85],[10000000,92],[50000000,100]]);
   if (liqRatio && liqRatio < 0.01) liquidityScore = Math.min(liquidityScore, 35);
-  const momentumScore = clamp(changeScore(h1) * 0.3 + changeScore(h6) * 0.3 + changeScore(h24) * 0.2 + buyPressure(pair) * 0.2);
-  const volRatio = liquidity ? volume24 / liquidity : 0;
-  let marketScore = 45 + Math.min(25, pairs.length * 4) + Math.min(20, ageDays * 2);
-  if (volRatio > 0.05 && volRatio < 3) marketScore += 10; if (volRatio >= 3) marketScore -= 8;
+  else if (liqRatio && liqRatio < 0.02) liquidityScore = Math.min(liquidityScore, 72);
+  const liquidityNotes = [];
+  if (liqRatio) liquidityNotes.push('Rasio likuiditas/FDV ' + (liqRatio * 100).toFixed(1) + '% — ' + (liqRatio < 0.02 ? 'tipis, harga gampang digerakkan.' : 'cukup sehat untuk ukuran pasar ini.'));
+  liquidityNotes.push(liquidity >= 100000 ? 'Likuiditas dalam — slippage relatif kecil untuk ukuran ritel.' : liquidity >= 10000 ? 'Likuiditas ada, tapi ukuran trade besar tetap bisa menggerakkan harga.' : 'Likuiditas tipis — eksekusi ritel berisiko slippage besar.');
+
+  let momentumScore = clamp(changeScore(m5) * 0.15 + changeScore(h1) * 0.3 + changeScore(h6) * 0.25 + changeScore(h24) * 0.15 + pressure * 0.15);
+  const momentumNotes = [];
+  if (m5 > 0 && h1 > 0 && h6 > 0 && h24 > 0) momentumNotes.push('Harga naik konsisten di semua timeframe (5m–24j).');
+  else if (m5 < 0 && h1 < 0 && h6 < 0 && h24 < 0) momentumNotes.push('Harga turun konsisten di semua timeframe (5m–24j).');
+  else momentumNotes.push('Momentum campuran antar timeframe (5m–24j).');
+  momentumNotes.push('Tekanan beli 24j ' + pressure.toFixed(0) + '% (' + tx24.buys + ' beli vs ' + tx24.sells + ' jual).');
+  if (volume24 && volumeH1 < volume24 / 24) momentumNotes.push('Volume 1 jam terakhir di bawah rata-rata — minat mendingin.');
+  else if (volume24 && volumeH1 > volume24 / 12) momentumNotes.push('Volume 1 jam terakhir di atas rata-rata — minat menguat.');
+
+  let marketScore = 45 + Math.min(25, pairs.length * 2) + Math.min(20, age * 0.05);
+  if (turnover > 0.05 && turnover < 3) marketScore += 10;
+  if (turnover >= 3) marketScore -= 8;
+  if (turnover && turnover < 0.05) marketScore -= 5;
   marketScore = clamp(marketScore);
+  const marketNotes = ['Pair berumur ' + Math.round(age) + ' hari.', 'Turnover volume/likuiditas ' + turnover.toFixed(2) + 'x per 24j — ' + (turnover < 0.05 ? 'pasar sepi untuk ukuran likuiditasnya.' : turnover > 3 ? 'pasar sangat panas untuk ukuran likuiditasnya.' : 'aktivitas pasar masih masuk akal.'), 'Token punya ' + pairs.length + ' pair terdaftar di DexScreener.', liqRatio && liqRatio < 0.01 ? 'FDV jauh lebih besar dibanding likuiditas.' : 'FDV masih masuk akal dibanding likuiditas.'];
+
   let riskScore = 72;
   if (liquidity < 10000) riskScore -= 18;
   if (liqRatio && liqRatio < 0.01) riskScore -= 20;
   if (h1 > 100 && liquidity < 50000) riskScore -= 18;
-  if (facts.honeypot) riskScore = 0;
+  if (facts.honeypot || facts.cannotSellAll) riskScore = 0;
   if (facts.creatorPct !== null && facts.creatorPct > 20) riskScore -= 18;
   if (facts.top10Pct && facts.top10Pct > 50) riskScore -= 16;
-  if (facts.mintable) riskScore -= 8;
+  if (facts.bundleSharePct && facts.bundleSharePct > 30) riskScore -= 10;
+  if (facts.mintable || facts.mintAuthorityActive) riskScore -= 8;
+  if (facts.proxy) riskScore -= 6;
+  if (facts.openSource === false) riskScore -= 6;
+  if ((facts.buyTaxPct || 0) > 5 || (facts.sellTaxPct || 0) > 5) riskScore -= 8;
   riskScore = clamp(riskScore);
-  let score = liquidityScore * 0.35 + momentumScore * 0.25 + marketScore * 0.2 + riskScore * 0.2;
+
+  const factors = [
+    { key: 'liquidity', label: 'Likuiditas & Eksekusi', score: Math.round(liquidityScore), weight: 35, notes: liquidityNotes },
+    { key: 'momentum', label: 'Momentum', score: Math.round(momentumScore), weight: 25, notes: momentumNotes },
+    { key: 'marketQuality', label: 'Kualitas Pasar', score: Math.round(marketScore), weight: 20, notes: marketNotes },
+    { key: 'risk', label: 'Risiko Creator & Bundle', score: Math.round(riskScore), weight: 20, notes: facts.notes }
+  ].map((f) => ({ ...f, points: Number((f.score * f.weight / 100).toFixed(1)) }));
+  const rawScore = Math.round(factors.reduce((sum, f) => sum + f.points, 0));
+  let score = rawScore;
+  let cap = null; let capReason = null;
   const caps = [];
-  if (liquidity < 1000) { score = Math.min(score, 20); caps.push('Likuiditas di bawah $1.000, score dibatasi 20 dan status tidak bisa dieksekusi.'); }
-  if (facts.honeypot) { score = Math.min(score, 20); caps.push('Sinyal honeypot membuat score dibatasi 20.'); }
-  if (liqRatio && liqRatio < 0.01) { score = Math.min(score, 35); caps.push('Rasio likuiditas/FDV di bawah 1%, score dibatasi 35.'); }
-  if (h1 > 100 && liquidity < 50000) { score = Math.min(score, 45); caps.push('Pump 1 jam sangat tinggi di likuiditas tipis, score dibatasi 45.'); }
+  if (liquidity < 1000) { cap = 20; capReason = 'Likuiditas di bawah $1.000, score dibatasi 20 dan status tidak bisa dieksekusi.'; caps.push(capReason); }
+  if (facts.honeypot || facts.cannotSellAll) { cap = 20; capReason = 'Sinyal honeypot / tidak bisa dijual membuat score dibatasi 20.'; caps.push(capReason); }
+  if (liqRatio && liqRatio < 0.01) { cap = Math.min(cap ?? 35, 35); capReason = 'Rasio likuiditas/FDV di bawah 1%, score dibatasi 35.'; caps.push(capReason); }
+  if (h1 > 100 && liquidity < 50000) { cap = Math.min(cap ?? 45, 45); capReason = 'Pump 1 jam sangat tinggi di likuiditas tipis, score dibatasi 45.'; caps.push(capReason); }
+  if (cap !== null) score = Math.min(score, cap);
   score = Math.round(clamp(score));
-  const executable = liquidity >= 1000 && !facts.honeypot;
+  const executable = liquidity >= 1000 && !facts.honeypot && !facts.cannotSellAll;
+  const execution = { status: executable ? 'Bisa dieksekusi' : 'Tidak bisa dieksekusi', detail: executable ? 'Pair aktif dengan likuiditas yang cukup untuk dieksekusi pada ukuran ritel.' : 'Pair tidak punya likuiditas aktif yang cukup atau terdeteksi risiko jual, jadi swap tidak dianggap aman dieksekusi.' };
   const bias = score >= 70 ? 'Naik' : score >= 45 ? 'Netral' : 'Turun';
-  const confidence = !executable ? 'Rendah' : (ageDays > 7 && volume24 > 10000 && facts.available ? 'Tinggi' : ageDays > 1 && volume24 > 1000 ? 'Sedang' : 'Rendah');
-  return { score, bias, confidence, executable, caps, facts, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
+  const confidence = !executable ? 'Rendah' : (age > 7 && volume24 > 10000 && facts.available ? 'Tinggi' : age > 1 && volume24 > 1000 ? 'Sedang' : 'Rendah');
+  return { score, rawScore, cap, capReason, bias, confidence, executable, execution, caps, facts, factors, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
 }
 
-function bar(label, value) { return '<div class="bar-row"><div class="bar-label"><span>' + label + '</span><b>' + Math.round(value) + '</b></div><div class="bar"><i style="width:' + clamp(value) + '%"></i></div></div>'; }
+function bar(label, value) { return '<div class="bar-row"><div class="bar-label"><span>' + esc(label) + '</span><b>' + Math.round(value) + '</b></div><div class="bar"><i style="width:' + clamp(value) + '%"></i></div></div>'; }
+function factorCard(factor) {
+  return '<article class="factor-card"><div class="factor-head"><b>' + esc(factor.label) + '</b><span>' + factor.score + '/100 · bobot ' + factor.weight + '% · ' + factor.points + ' poin</span></div>' + bar(factor.label, factor.score) + '<ul>' + factor.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul></article>';
+}
+function yesNo(value) { return value === true ? 'Ya' : value === false ? 'Tidak' : 'Tidak tersedia'; }
 
 function render(pair, scored) {
   const token = pair.baseToken || {};
-  const pairOptions = currentPairs.map((p, i) => '<option value="' + i + '"' + (p === pair ? ' selected' : '') + '>' + esc(p.chainId) + ' · ' + esc(p.dexId || 'DEX') + ' · ' + compact(p.liquidity?.usd) + '</option>').join('');
-  const capHtml = scored.caps.length ? '<div class="cap"><b>Kenapa score dibatasi</b><br>' + scored.caps.join('<br>') + '</div>' : '';
+  const quoteSymbol = pair.quoteToken?.symbol || '';
+  const pairOptions = currentPairs.map((p, i) => '<option value="' + i + '"' + (p === pair ? ' selected' : '') + '>' + esc(p.chainId) + ' · ' + esc(p.dexId || 'DEX') + (p.quoteToken?.symbol ? ' · ' + esc(p.quoteToken.symbol) : '') + ' · ' + compact(p.liquidity?.usd) + '</option>').join('');
+  const capHtml = scored.capReason ? '<div class="cap"><b>Kenapa score dibatasi</b><br>Raw score ' + scored.rawScore + ' dibatasi ke ' + scored.cap + '. ' + esc(scored.capReason) + '</div>' : '';
+  const holdersHtml = scored.facts.topHolders.length ? '<div class="panel wide"><span>Top holders</span><table><tr><th>Wallet</th><th>Share</th><th>Type</th></tr>' + scored.facts.topHolders.map((h) => '<tr><td>' + esc(shortAddress(h.address)) + '</td><td>' + h.percent.toFixed(2) + '%</td><td>' + (h.isLocked ? 'Locked' : h.isContract ? 'Contract' : 'Wallet') + '</td></tr>').join('') + '</table></div>' : '';
   $('result').innerHTML = '<div class="dashboard">' +
-    '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + ' · Pair age ' + ageText(pair) + '</p></div></div>' +
+    '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + (quoteSymbol ? ' · ' + esc(quoteSymbol) : '') + ' · Pair age ' + ageText(pair) + '</p><p><a href="' + esc(pair.url || '#') + '" target="_blank" rel="noreferrer">Lihat pair di DexScreener</a> · Pair ' + esc(shortAddress(pair.pairAddress)) + '</p></div></div>' +
     '<label>Pair <select id="pairSelect">' + pairOptions + '</select></label></div>' +
     '<div class="score-grid"><div><div class="score-ring" style="--score:' + scored.score + '"><div><span><b>' + scored.score + '</b><br>Score</span></div></div></div><div>' +
-    '<div class="badges"><span class="badge ' + (scored.bias === 'Naik' ? 'good' : scored.bias === 'Turun' ? 'bad' : 'warn') + '">Bias ' + scored.bias + '</span><span class="badge">Confidence ' + scored.confidence + '</span><span class="badge ' + (scored.executable ? 'good' : 'bad') + '">' + (scored.executable ? 'Bisa dieksekusi' : 'Tidak bisa dieksekusi') + '</span></div>' +
-    bar('Likuiditas & eksekusi', scored.parts.liquidityScore) + bar('Momentum', scored.parts.momentumScore) + bar('Kualitas pasar', scored.parts.marketScore) + bar('Risiko creator + bundle', scored.parts.riskScore) + capHtml + '</div></div>' +
-    '<div class="metrics"><div class="metric"><span>Price</span><b>' + money(pair.priceUsd) + '</b></div><div class="metric"><span>Liquidity</span><b>' + compact(pair.liquidity?.usd) + '</b></div><div class="metric"><span>FDV</span><b>' + compact(pair.fdv || pair.marketCap) + '</b></div><div class="metric"><span>Volume 24h</span><b>' + compact(pair.volume?.h24) + '</b></div><div class="metric"><span>1h</span><b>' + pct(pair.priceChange?.h1) + '</b></div><div class="metric"><span>6h</span><b>' + pct(pair.priceChange?.h6) + '</b></div><div class="metric"><span>24h</span><b>' + pct(pair.priceChange?.h24) + '</b></div><div class="metric"><span>Buy pressure</span><b>' + buyPressure(pair).toFixed(1) + '%</b></div></div>' +
-    '<div class="panels"><div class="panel"><span>Estimasi slippage</span><table><tr><th>Trade</th><th>Impact</th></tr><tr><td>$10</td><td>' + slippage(pair, 10) + '</td></tr><tr><td>$100</td><td>' + slippage(pair, 100) + '</td></tr><tr><td>$1,000</td><td>' + slippage(pair, 1000) + '</td></tr></table></div>' +
-    '<div class="panel"><span>Creator</span><p>' + (scored.facts.creatorPct === null ? 'Data creator share tidak tersedia.' : 'Creator/owner share sekitar ' + scored.facts.creatorPct.toFixed(2) + '%.') + '</p></div>' +
-    '<div class="panel"><span>Bundle heuristic</span><p>' + (scored.facts.top10Pct ? 'Konsentrasi holder teratas sekitar ' + scored.facts.top10Pct.toFixed(2) + '%. Ini heuristik, bukan bukti bundle.' : 'Data konsentrasi holder tidak tersedia.') + '</p></div>' +
-    '<div class="panel"><span>Security notes</span><p>' + scored.facts.notes.join(' ') + '</p></div></div>' +
+    '<div class="badges"><span class="badge ' + (scored.bias === 'Naik' ? 'good' : scored.bias === 'Turun' ? 'bad' : 'warn') + '">Bias ' + scored.bias + '</span><span class="badge">Confidence ' + scored.confidence + '</span><span class="badge ' + (scored.executable ? 'good' : 'bad') + '">' + scored.execution.status + '</span></div>' +
+    '<p class="execution-detail">' + esc(scored.execution.detail) + '</p>' + capHtml + '</div></div>' +
+    '<div class="factor-grid">' + scored.factors.map(factorCard).join('') + '</div>' +
+    '<div class="metrics">' +
+    '<div class="metric"><span>Price</span><b>' + money(pair.priceUsd) + '</b></div>' +
+    '<div class="metric"><span>Liquidity</span><b>' + compact(pair.liquidity?.usd) + '</b></div>' +
+    '<div class="metric"><span>FDV</span><b>' + compact(pair.fdv || pair.marketCap) + '</b></div>' +
+    '<div class="metric"><span>Market cap</span><b>' + compact(pair.marketCap || pair.fdv) + '</b></div>' +
+    '<div class="metric"><span>Volume 1h</span><b>' + compact(pair.volume?.h1) + '</b></div>' +
+    '<div class="metric"><span>Volume 6h</span><b>' + compact(pair.volume?.h6) + '</b></div>' +
+    '<div class="metric"><span>Volume 24h</span><b>' + compact(pair.volume?.h24) + '</b></div>' +
+    '<div class="metric"><span>Buy pressure 24h</span><b>' + buyPressure(pair).toFixed(1) + '%</b></div>' +
+    '<div class="metric"><span>5m</span><b>' + pct(pair.priceChange?.m5) + '</b></div>' +
+    '<div class="metric"><span>1h</span><b>' + pct(pair.priceChange?.h1) + '</b></div>' +
+    '<div class="metric"><span>6h</span><b>' + pct(pair.priceChange?.h6) + '</b></div>' +
+    '<div class="metric"><span>24h</span><b>' + pct(pair.priceChange?.h24) + '</b></div></div>' +
+    '<div class="panels"><div class="panel"><span>Estimasi slippage</span><table><tr><th>Trade</th><th>Impact</th></tr><tr><td>$10</td><td>' + slippageText(pair, 10) + '</td></tr><tr><td>$100</td><td>' + slippageText(pair, 100) + '</td></tr><tr><td>$1,000</td><td>' + slippageText(pair, 1000) + '</td></tr></table></div>' +
+    '<div class="panel"><span>Creator</span><p>Creator: ' + esc(shortAddress(scored.facts.creatorAddress) || 'Tidak tersedia') + '<br>Creator share: ' + (scored.facts.creatorPct === null ? 'Tidak tersedia' : scored.facts.creatorPct.toFixed(2) + '%') + '<br>Owner: ' + esc(shortAddress(scored.facts.ownerAddress) || 'Tidak tersedia') + '<br>Mintable: ' + yesNo(scored.facts.mintable) + ' · Proxy: ' + yesNo(scored.facts.proxy) + ' · Open source: ' + yesNo(scored.facts.openSource) + '</p></div>' +
+    '<div class="panel"><span>Bundle heuristic</span><p>Bundle share: ' + (scored.facts.bundleSharePct === null ? 'Tidak tersedia' : '±' + scored.facts.bundleSharePct.toFixed(1) + '%') + '<br>Bundle wallets: ' + scored.facts.bundleWalletCount + '<br>Top 10: ' + (scored.facts.top10Pct === null ? 'Tidak tersedia' : scored.facts.top10Pct.toFixed(1) + '%') + '<br>Top 10 non-contract: ' + (scored.facts.top10NonContractPct === null ? 'Tidak tersedia' : scored.facts.top10NonContractPct.toFixed(1) + '%') + '<br>Holders: ' + (scored.facts.holderCount === null ? 'Tidak tersedia' : scored.facts.holderCount.toLocaleString('en-US')) + '</p></div>' +
+    '<div class="panel"><span>Security</span><p>Honeypot: ' + yesNo(scored.facts.honeypot) + '<br>Cannot sell all: ' + yesNo(scored.facts.cannotSellAll) + '<br>Buy tax: ' + (scored.facts.buyTaxPct === null ? 'Tidak tersedia' : scored.facts.buyTaxPct.toFixed(2) + '%') + '<br>Sell tax: ' + (scored.facts.sellTaxPct === null ? 'Tidak tersedia' : scored.facts.sellTaxPct.toFixed(2) + '%') + '<br>Mint authority: ' + yesNo(scored.facts.mintAuthorityActive) + '<br>Freeze authority: ' + yesNo(scored.facts.freezeAuthorityActive) + '</p></div>' + holdersHtml + '</div>' +
     '<p class="muted">Source: DexScreener' + (scored.facts.available ? ' + GoPlus' : '') + ' · Updated ' + new Date().toLocaleString('id-ID') + ' · Score adalah signal, bukan nasihat finansial.</p></div>';
   $('result').classList.remove('hidden');
-  $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; currentSecurity = await fetchSecurity(next, currentAddress, detectMode(currentAddress, $('chainMode').value)); render(next, scorePair(next, currentPairs, currentSecurity)); });
+  $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; currentSecurity = await fetchSecurity(next, currentAddress, currentMode); render(next, scorePair(next, currentPairs, currentSecurity)); });
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -120,13 +212,13 @@ async function analyze() {
     const res = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + encodeURIComponent(address));
     const json = await res.json();
     currentPairs = (json.pairs || []).filter((p) => mode === 'sol' ? p.chainId === 'solana' : p.chainId !== 'solana').sort((a, b) => num(b.liquidity?.usd) - num(a.liquidity?.usd));
-    currentAddress = address;
-    if (!currentPairs.length) { $('result').innerHTML = '<div class="dashboard"><h2>Tidak bisa dieksekusi</h2><p>Tidak ada pair ditemukan untuk address ini. Score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); return; }
+    currentAddress = address; currentMode = mode;
+    if (!currentPairs.length) { $('result').innerHTML = '<div class="dashboard"><h2>Tidak bisa dieksekusi</h2><p>Tidak ada pair ditemukan untuk address ini. Score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     const pair = currentPairs[0];
     currentSecurity = await fetchSecurity(pair, address, mode);
     render(pair, scorePair(pair, currentPairs, currentSecurity));
   } catch { $('formError').textContent = 'Gagal mengambil data pair. Coba lagi sebentar.'; }
-  finally { $('analyzeBtn').disabled = false; $('analyzeBtn').textContent = 'Analyze →'; }
+  finally { $('analyzeBtn').disabled = false; $('analyzeBtn').innerHTML = 'Analyze <span>→</span>'; }
 }
 
 $('analyzeBtn').addEventListener('click', analyze);
@@ -145,20 +237,23 @@ async function loadLeaderboard() {
   try {
     const res = await fetch('https://api.dexscreener.com/token-boosts/latest/v1');
     const json = await res.json();
-    const items = (Array.isArray(json) ? json : []).map((item) => item.tokenAddress || item.address).filter(Boolean).slice(0, 6);
-    const pairs = (await Promise.allSettled(items.map(fetchBestPair))).map((r) => r.status === 'fulfilled' ? r.value : null).filter(Boolean);
-    if (!pairs.length) throw new Error('empty');
-    box.innerHTML = pairs.map((pair, i) => {
+    const boosts = (Array.isArray(json) ? json : []).slice(0, 10);
+    const resolved = await Promise.allSettled(boosts.map(async (boost) => {
+      const address = boost.tokenAddress || boost.address;
+      const pair = address ? await fetchBestPair(address) : null;
+      return { boost, address, pair };
+    }));
+    const rows = resolved.map((r) => r.status === 'fulfilled' ? r.value : null).filter((r) => r && r.pair);
+    if (!rows.length) throw new Error('empty');
+    box.innerHTML = rows.map(({ boost, address, pair }, i) => {
       const token = pair.baseToken || {};
-      const quick = scorePair(pair, [pair], null);
-      const address = token.address || '';
       const mode = pair.chainId === 'solana' ? 'sol' : 'evm';
       return '<div class="leader-row"><div class="rank">' + (i + 1) + '</div>' +
-        '<div class="leader-token"><b>' + esc(token.symbol || token.name || 'Token') + '</b><span>' + esc(token.name || '') + ' · ' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + '</span></div>' +
-        '<div class="leader-stat"><span>Liquidity</span><b>' + compact(pair.liquidity?.usd) + '</b></div>' +
+        '<div class="leader-token"><b>' + esc(token.symbol || token.name || 'Token') + '</b><span>' + esc(token.name || '') + ' · ' + esc(pair.chainId) + '</span></div>' +
+        '<div class="leader-stat"><span>Price</span><b>' + money(pair.priceUsd) + '</b></div>' +
         '<div class="leader-stat"><span>24h</span><b>' + pct(pair.priceChange?.h24) + '</b></div>' +
-        '<div class="leader-stat"><span>Quick signal</span><b>' + quick.score + ' · ' + quick.bias + '</b></div>' +
-        '<button type="button" data-leader-address="' + esc(address) + '" data-leader-mode="' + mode + '">Analyze</button></div>';
+        '<div class="leader-stat"><span>Boost</span><b>' + esc(boost.amount ?? boost.boostAmount ?? '-') + '</b></div>' +
+        '<div class="leader-actions"><a href="' + esc(pair.url || '#') + '" target="_blank" rel="noreferrer">Dex</a><button type="button" data-leader-address="' + esc(address) + '" data-leader-mode="' + mode + '">Analyze</button></div></div>';
     }).join('');
     box.querySelectorAll('[data-leader-address]').forEach((button) => button.addEventListener('click', () => { $('addressInput').value = button.dataset.leaderAddress; $('chainMode').value = button.dataset.leaderMode; analyze(); }));
   } catch {

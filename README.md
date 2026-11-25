@@ -12,9 +12,9 @@ Paste a token contract address and Pumpfase returns:
 - Execution status
 - Pair selector
 - Slippage estimates for $10 / $100 / $1,000
-- Per-factor score breakdown
-- Creator and bundle heuristic panels
-- Trending token leaderboard snapshot
+- Per-factor score breakdown with notes, weights, and points
+- Creator, bundle, security, tax, authority, and top-holder panels
+- Trending token leaderboard snapshot with price, 24h change, boost, and Dex links
 
 ## Scoring
 
