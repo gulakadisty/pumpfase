@@ -304,15 +304,29 @@ async function fetchQuoter(pair, address, mode) {
   } catch { return null; }
 }
 const GT_NETWORKS = { ethereum: 'eth', solana: 'solana', bsc: 'bsc', base: 'base', arbitrum: 'arbitrum', polygon: 'polygon_pos', avalanche: 'avax', optimism: 'optimism' };
+async function fetchOhlcv(network, poolAddress, cfg) {
+  const res = await fetch('https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + encodeURIComponent(poolAddress) + '/ohlcv/' + cfg[0] + '?aggregate=' + cfg[1] + '&limit=' + cfg[2]);
+  const json = await res.json();
+  const list = json.data?.attributes?.ohlcv_list || [];
+  return list.map((c) => ({ t: c[0], o: c[1], h: c[2], l: c[3], c: c[4], v: c[5] })).sort((a, b) => a.t - b.t);
+}
 async function fetchChart(pair, range) {
   const network = GT_NETWORKS[pair.chainId];
   if (!network || !pair.pairAddress) return [];
   const cfg = range === '7H' ? ['hour', 1, 168] : range === '30H' ? ['hour', 12, 60] : ['minute', 15, 96];
   try {
-    const res = await fetch('https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + encodeURIComponent(pair.pairAddress) + '/ohlcv/' + cfg[0] + '?aggregate=' + cfg[1] + '&limit=' + cfg[2]);
-    const json = await res.json();
-    const list = json.data?.attributes?.ohlcv_list || [];
-    return list.map((c) => ({ t: c[0], o: c[1], h: c[2], l: c[3], c: c[4], v: c[5] })).sort((a, b) => a.t - b.t);
+    const direct = await fetchOhlcv(network, pair.pairAddress, cfg);
+    if (direct.length) return direct;
+    const tokenAddress = pair.baseToken?.address;
+    if (!tokenAddress) return [];
+    const poolsRes = await fetch('https://api.geckoterminal.com/api/v2/networks/' + network + '/tokens/' + encodeURIComponent(tokenAddress) + '/pools');
+    const poolsJson = await poolsRes.json();
+    const pools = (poolsJson.data || []).map((pool) => ({ address: pool.attributes?.address || String(pool.id || '').split('_').slice(1).join('_'), reserve: num(pool.attributes?.reserve_in_usd) })).filter((pool) => pool.address).sort((a, b) => b.reserve - a.reserve);
+    for (const pool of pools) {
+      const candles = await fetchOhlcv(network, pool.address, cfg);
+      if (candles.length) return candles;
+    }
+    return [];
   } catch { return []; }
 }
 function chartSvg(candles) {
