@@ -269,13 +269,22 @@ async function fetchQuoter(pair, address, mode) {
     if (mode === 'sol') {
       const solMint = 'So11111111111111111111111111111111111111112';
       const lamports = Math.max(1, Math.round(tokenUi * priceNative * 1e9));
-      const buyRes = await fetch('https://quote-api.jup.ag/v6/quote?inputMint=' + solMint + '&outputMint=' + encodeURIComponent(address) + '&amount=' + lamports + '&slippageBps=100');
-      const buyJson = await buyRes.json();
+      const jupiterQuote = async (inputMint, outputMint, amount) => {
+        const urls = ['https://lite-api.jup.ag/swap/v1/quote', 'https://quote-api.jup.ag/v6/quote'];
+        for (const base of urls) {
+          try {
+            const res = await fetch(base + '?inputMint=' + encodeURIComponent(inputMint) + '&outputMint=' + encodeURIComponent(outputMint) + '&amount=' + amount + '&slippageBps=100');
+            const json = await res.json();
+            if (json && json.outAmount) return json;
+          } catch { /* try next endpoint */ }
+        }
+        return null;
+      };
+      const buyJson = await jupiterQuote(solMint, address, lamports);
       const buy = buyJson && buyJson.outAmount ? { inAmount: String(lamports), outAmount: String(buyJson.outAmount), outAmountUi: num(buyJson.outAmount) / 1e6, priceImpactPct: num(buyJson.priceImpactPct), route: (buyJson.routePlan || []).map((r) => r.swapInfo?.label).filter(Boolean).join(' → ') || 'Jupiter' } : null;
       let sell = null;
       if (buy) {
-        const sellRes = await fetch('https://quote-api.jup.ag/v6/quote?inputMint=' + encodeURIComponent(address) + '&outputMint=' + solMint + '&amount=' + buy.outAmount + '&slippageBps=100');
-        const sellJson = await sellRes.json();
+        const sellJson = await jupiterQuote(address, solMint, buy.outAmount);
         if (sellJson && sellJson.outAmount) sell = { inAmount: buy.outAmount, outAmount: String(sellJson.outAmount), outAmountUi: num(sellJson.outAmount) / 1e9, priceImpactPct: num(sellJson.priceImpactPct), route: (sellJson.routePlan || []).map((r) => r.swapInfo?.label).filter(Boolean).join(' → ') || 'Jupiter' };
       }
       return { supported: true, source: 'Jupiter', counterSymbol: 'SOL', tradeUsd: 100, buy, sell, verdict: buy && sell ? 'Route beli & jual ditemukan via Jupiter — swap ±$100 benar-benar bisa dieksekusi, bukan cuma harga pajangan.' : 'Route swap nyata tidak ditemukan via Jupiter untuk ±$100.' };
