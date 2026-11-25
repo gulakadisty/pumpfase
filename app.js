@@ -182,7 +182,59 @@ function scorePair(pair, pairs, security, quoter) {
   sniperNotes.push(sniperWalletsAll.length ? sniperWalletsAll.length + ' wallet non-kontrak berukuran sniper (masing-masing ≥0,5% supply) di top holder menguasai total ' + sniperShare.toFixed(1) + '% supply — makin besar, makin besar risiko dump mendadak dari pembeli awal.' : 'Tidak ada wallet non-kontrak berukuran sniper (≥0,5% supply) di top holder selain creator — kepemilikan awal terlihat menyebar.');
   if (firstHourVolumeSharePct !== null && firstHourVolumeSharePct >= 50) sniperNotes.push(firstHourVolumeSharePct.toFixed(1) + '% volume 24 jam terjadi di 1 jam terakhir — aktivitas terkonsentrasi di jendela singkat adalah pola khas perburuan sniper/bot.');
   const sniper = { sharePct: sniperShare, walletCount: sniperWalletsAll.length, wallets: sniperWalletsAll.slice(0, 5).map((h) => ({ address: h.address, percent: h.percent })), phase: sniperPhase, pairAgeHours, firstHourVolumeSharePct, level: sniperShare === null ? 'Tidak terdeteksi' : sniperShare >= 20 ? 'Tinggi' : sniperShare >= 10 ? 'Sedang' : 'Rendah', notes: sniperNotes };
-  return { score, rawScore, cap, capReason, bias, confidence, executable, execution, caps, facts, factors, sniper, quoter, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
+  const rugFlags = [];
+  const rugMitigations = [];
+  let rugPoints = 0;
+  const addRug = (points, text) => { rugPoints += points; rugFlags.push(text); };
+  if (facts.honeypot || facts.cannotSellAll) addRug(100, 'Honeypot / tidak bisa dijual terdeteksi.');
+  if (quoter && quoter.supported && !quoter.sell) addRug(55, 'Route jual ±$100 tidak ditemukan via quoter.');
+  else if (quoter && quoter.supported && !quoter.buy) addRug(35, 'Route beli ±$100 tidak ditemukan via quoter.');
+  if (quoterMaxImpact !== null && quoterMaxImpact > 25) addRug(15, 'Price impact quoter di atas 25% untuk ±$100.');
+  else if (quoterMaxImpact !== null && quoterMaxImpact > 10) addRug(8, 'Price impact quoter di atas 10% untuk ±$100.');
+  if (liquidity < 1000) addRug(35, 'Likuiditas di bawah $1.000.');
+  else if (liquidity < 10000) addRug(20, 'Likuiditas di bawah $10.000.');
+  else if (liquidity < 50000) addRug(10, 'Likuiditas di bawah $50.000.');
+  if (liqRatio && liqRatio < 0.005) addRug(15, 'Rasio likuiditas/FDV di bawah 0,5%.');
+  else if (liqRatio && liqRatio < 0.02) addRug(8, 'Rasio likuiditas/FDV di bawah 2%.');
+  if (facts.creatorPct !== null && facts.creatorPct > 20) addRug(18, 'Creator memegang lebih dari 20% supply.');
+  else if (facts.creatorPct !== null && facts.creatorPct > 10) addRug(10, 'Creator memegang lebih dari 10% supply.');
+  if ((facts.top10Pct || 0) > 50) addRug(18, 'Top 10 holder menguasai lebih dari 50% supply.');
+  else if ((facts.top10Pct || 0) > 35) addRug(10, 'Top 10 holder menguasai lebih dari 35% supply.');
+  if ((facts.bundleSharePct || 0) > 25) addRug(16, 'Indikasi bundle di atas 25% supply.');
+  else if ((facts.bundleSharePct || 0) > 15) addRug(8, 'Indikasi bundle di atas 15% supply.');
+  if (sniper.level === 'Tinggi') addRug(12, 'Kepemilikan sniper-like tinggi.');
+  else if (sniper.level === 'Sedang') addRug(6, 'Kepemilikan sniper-like sedang.');
+  if (facts.mintable || facts.mintAuthorityActive) addRug(10, 'Mint authority masih aktif.');
+  if (facts.freezeAuthorityActive) addRug(8, 'Freeze authority masih aktif.');
+  if (facts.proxy) addRug(6, 'Kontrak proxy terdeteksi.');
+  if (facts.openSource === false) addRug(8, 'Kontrak tidak open source menurut data security.');
+  if ((facts.buyTaxPct || 0) > 10 || (facts.sellTaxPct || 0) > 10) addRug(14, 'Tax beli/jual di atas 10%.');
+  else if ((facts.buyTaxPct || 0) > 5 || (facts.sellTaxPct || 0) > 5) addRug(8, 'Tax beli/jual di atas 5%.');
+  const ownerText = String(facts.ownerAddress || '');
+  if (ownerText && !/^0x0{40}$/i.test(ownerText)) addRug(4, 'Owner kontrak belum renounced menurut data security.');
+  if (pairAgeHours !== null && pairAgeHours < 1) addRug(12, 'Pair berumur di bawah 1 jam.');
+  else if (pairAgeHours !== null && pairAgeHours < 24) addRug(7, 'Pair berumur di bawah 24 jam.');
+  if (executable && quoter && quoter.buy && quoter.sell) rugMitigations.push('Route beli dan jual ±$100 ditemukan.');
+  if (liquidity >= 100000) rugMitigations.push('Likuiditas di atas $100.000.');
+  if (facts.creatorPct !== null && facts.creatorPct <= 5) rugMitigations.push('Creator share rendah.');
+  if ((facts.top10Pct || 100) <= 35) rugMitigations.push('Konsentrasi top 10 holder tidak ekstrem.');
+  if (!facts.mintable && !facts.mintAuthorityActive && !facts.freezeAuthorityActive) rugMitigations.push('Mint/freeze authority tidak aktif menurut data security.');
+  if (facts.openSource === true) rugMitigations.push('Kontrak open source menurut data security.');
+  if (!rugFlags.length) rugFlags.push('Tidak ada red flag rugpull besar dari data yang tersedia.');
+  const rugpull = { level: rugPoints >= 70 ? 'Sangat tinggi' : rugPoints >= 45 ? 'Tinggi' : rugPoints >= 25 ? 'Sedang' : 'Rendah', points: Math.min(100, Math.round(rugPoints)), flags: rugFlags, mitigations: rugMitigations, notes: ['Level ini merangkum red flag rugpull dari data pasar, quoter, dan security yang tersedia.', 'LP lock/burn khusus dan creator sell dari transaksi awal belum dibaca sebagai bukti mutlak.'] };
+  const chanceBins = [{ max: 35, up0: 50, up5: 35 }, { max: 45, up0: 50, up5: 27 }, { max: 55, up0: 42, up5: 13 }, { max: 65, up0: 43, up5: 23 }, { max: 75, up0: 40, up5: 27 }, { max: 101, up0: 42, up5: 35 }];
+  const chanceBin = chanceBins.find((b) => momentumScore < b.max) || chanceBins[chanceBins.length - 1];
+  let upPct = chanceBin.up0 + (score - 55) * 0.18 + (riskScore - 50) * 0.08;
+  let up5Pct = chanceBin.up5 + (score - 55) * 0.12 + (riskScore - 50) * 0.05;
+  if (confidence === 'Rendah') { upPct = upPct * 0.65 + 43.2 * 0.35; up5Pct = up5Pct * 0.65 + 16.3 * 0.35; }
+  if (!executable) { upPct = Math.min(upPct, 15); up5Pct = Math.min(up5Pct, 5); }
+  if (rugpull.level === 'Sangat tinggi') { upPct = Math.min(upPct, 25); up5Pct = Math.min(up5Pct, 8); }
+  else if (rugpull.level === 'Tinggi') { upPct = Math.min(upPct, 38); up5Pct = Math.min(up5Pct, 15); }
+  upPct = clamp(upPct, 3, 75); up5Pct = clamp(up5Pct, 2, 60);
+  const upSpread = confidence === 'Tinggi' ? 8 : confidence === 'Sedang' ? 12 : 18;
+  const up5Spread = confidence === 'Tinggi' ? 6 : confidence === 'Sedang' ? 9 : 14;
+  const chance = { horizon: '24 jam', upPct: Math.round(upPct), up5Pct: Math.round(up5Pct), range: [Math.max(1, Math.round(upPct - upSpread)), Math.min(95, Math.round(upPct + upSpread))], up5Range: [Math.max(1, Math.round(up5Pct - up5Spread)), Math.min(90, Math.round(up5Pct + up5Spread))], basis: 'Backtest momentum historis 12.681 sampel dari 62 pool; base rate naik 43,2% dan naik >5% 16,3%, lalu disesuaikan score, risiko, dan status eksekusi.', notes: ['Estimasi model, bukan probabilitas pasti atau janji harga naik.', 'Naik berarti harga 24 jam lagi lebih tinggi dari sekarang; naik >5% berarti return 24 jam di atas 5%.'] };
+  return { score, rawScore, cap, capReason, bias, confidence, executable, execution, caps, facts, factors, sniper, rugpull, chance, quoter, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
 }
 
 function bar(label, value) { return '<div class="bar-row"><div class="bar-label"><span>' + esc(label) + '</span><b>' + Math.round(value) + '</b></div><div class="bar"><i style="width:' + clamp(value) + '%"></i></div></div>'; }
@@ -198,6 +250,10 @@ function render(pair, scored) {
   const capHtml = scored.capReason ? '<div class="cap"><b>Kenapa score dibatasi</b><br>Raw score ' + scored.rawScore + ' dibatasi ke ' + scored.cap + '. ' + esc(scored.capReason) + '</div>' : '';
   const holdersHtml = scored.facts.topHolders.length ? '<div class="panel wide"><span>Top holders</span><table><tr><th>Wallet</th><th>Share</th><th>Type</th></tr>' + scored.facts.topHolders.map((h) => '<tr><td>' + esc(shortAddress(h.address)) + '</td><td>' + h.percent.toFixed(2) + '%</td><td>' + (h.isLocked ? 'Locked' : h.isContract ? 'Contract' : 'Wallet') + '</td></tr>').join('') + '</table></div>' : '';
   const sniperHtml = '<div class="panel wide"><span>Kepemilikan sniper</span><p>Fase: ' + esc(scored.sniper.phase) + '<br>Share sniper-like: ' + (scored.sniper.sharePct === null ? 'Tidak terdeteksi' : scored.sniper.sharePct.toFixed(1) + '%') + '<br>Wallet sniper-like: ' + scored.sniper.walletCount + '<br>Level: ' + esc(scored.sniper.level) + '<br>Volume 1 jam terakhir: ' + (scored.sniper.firstHourVolumeSharePct === null ? 'Tidak tersedia' : scored.sniper.firstHourVolumeSharePct.toFixed(1) + '% dari volume 24 jam') + '</p>' + (scored.sniper.wallets.length ? '<table><tr><th>Wallet sniper-like</th><th>Share</th></tr>' + scored.sniper.wallets.map((w) => '<tr><td>' + esc(shortAddress(w.address)) + '</td><td>' + w.percent.toFixed(2) + '%</td></tr>').join('') + '</table>' : '') + '<ul>' + scored.sniper.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul><p class="muted">Heuristik dari top holder saat ini, bukan pelacakan transaksi pertama.</p></div>';
+  const rug = scored.rugpull || { level: 'Tidak tersedia', points: 0, flags: [], mitigations: [], notes: [] };
+  const rugpullHtml = '<div class="panel wide"><span>Rugpull Risk</span><p>Level: ' + esc(rug.level) + ' · Points: ' + rug.points + '/100</p><b>Red flag</b><ul>' + rug.flags.map((flag) => '<li>' + esc(flag) + '</li>').join('') + '</ul>' + (rug.mitigations.length ? '<b>Mitigasi</b><ul>' + rug.mitigations.map((item) => '<li>' + esc(item) + '</li>').join('') + '</ul>' : '') + '<ul>' + rug.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul></div>';
+  const chance = scored.chance || null;
+  const chanceHtml = chance ? '<div class="panel wide"><span>Estimasi naik 24 jam</span><p>Naik: ' + chance.upPct + '% (range ' + chance.range[0] + '–' + chance.range[1] + '%)<br>Naik &gt;5%: ' + chance.up5Pct + '% (range ' + chance.up5Range[0] + '–' + chance.up5Range[1] + '%)</p><p class="muted">' + esc(chance.basis) + '</p><ul>' + chance.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul></div>' : '';
   const q = scored.quoter;
   const quoterHtml = '<div class="panel wide"><span>Cek Swap Nyata (Quoter)</span>' + (q ? '<p>' + esc(q.verdict) + '<br>Beli ±$100: ' + (q.buy ? esc(q.buy.route) + ' · impact ' + q.buy.priceImpactPct.toFixed(2) + '%' : 'route tidak ditemukan') + '<br>Jual ±$100: ' + (q.sell ? esc(q.sell.route) + ' · impact ' + q.sell.priceImpactPct.toFixed(2) + '%' : 'route tidak ditemukan') + '<br>Sumber: ' + esc(q.source) + ' · Counter: ' + esc(q.counterSymbol) + '</p>' : '<p>Quoter tidak tersedia saat ini — status eksekusi memakai heuristik likuiditas.</p>') + '</div>';
   const chartHtml = '<div class="panel wide"><span>Chart mini</span><div class="chart-switch"><button type="button" data-range="24J">24J</button><button type="button" data-range="7H">7H</button><button type="button" data-range="30H">30H</button></div><div id="chartBox"><p class="muted">Memuat chart...</p></div></div>';
@@ -224,7 +280,7 @@ function render(pair, scored) {
     '<div class="panels"><div class="panel"><span>Estimasi slippage</span><table><tr><th>Trade</th><th>Impact</th></tr><tr><td>$10</td><td>' + slippageText(pair, 10) + '</td></tr><tr><td>$100</td><td>' + slippageText(pair, 100) + '</td></tr><tr><td>$1,000</td><td>' + slippageText(pair, 1000) + '</td></tr></table></div>' +
     '<div class="panel"><span>Creator</span><p>Creator: ' + esc(shortAddress(scored.facts.creatorAddress) || 'Tidak tersedia') + '<br>Creator share: ' + (scored.facts.creatorPct === null ? 'Tidak tersedia' : scored.facts.creatorPct.toFixed(2) + '%') + '<br>Owner: ' + esc(shortAddress(scored.facts.ownerAddress) || 'Tidak tersedia') + '<br>Mintable: ' + yesNo(scored.facts.mintable) + ' · Proxy: ' + yesNo(scored.facts.proxy) + ' · Open source: ' + yesNo(scored.facts.openSource) + '</p></div>' +
     '<div class="panel"><span>Bundle heuristic</span><p>Bundle share: ' + (scored.facts.bundleSharePct === null ? 'Tidak tersedia' : '±' + scored.facts.bundleSharePct.toFixed(1) + '%') + '<br>Bundle wallets: ' + scored.facts.bundleWalletCount + '<br>Top 10: ' + (scored.facts.top10Pct === null ? 'Tidak tersedia' : scored.facts.top10Pct.toFixed(1) + '%') + '<br>Top 10 non-contract: ' + (scored.facts.top10NonContractPct === null ? 'Tidak tersedia' : scored.facts.top10NonContractPct.toFixed(1) + '%') + '<br>Holders: ' + (scored.facts.holderCount === null ? 'Tidak tersedia' : scored.facts.holderCount.toLocaleString('en-US')) + '</p></div>' +
-    '<div class="panel"><span>Security</span><p>Honeypot: ' + yesNo(scored.facts.honeypot) + '<br>Cannot sell all: ' + yesNo(scored.facts.cannotSellAll) + '<br>Buy tax: ' + (scored.facts.buyTaxPct === null ? 'Tidak tersedia' : scored.facts.buyTaxPct.toFixed(2) + '%') + '<br>Sell tax: ' + (scored.facts.sellTaxPct === null ? 'Tidak tersedia' : scored.facts.sellTaxPct.toFixed(2) + '%') + '<br>Mint authority: ' + yesNo(scored.facts.mintAuthorityActive) + '<br>Freeze authority: ' + yesNo(scored.facts.freezeAuthorityActive) + '</p></div>' + holdersHtml + sniperHtml + quoterHtml + chartHtml + '</div>' +
+    '<div class="panel"><span>Security</span><p>Honeypot: ' + yesNo(scored.facts.honeypot) + '<br>Cannot sell all: ' + yesNo(scored.facts.cannotSellAll) + '<br>Buy tax: ' + (scored.facts.buyTaxPct === null ? 'Tidak tersedia' : scored.facts.buyTaxPct.toFixed(2) + '%') + '<br>Sell tax: ' + (scored.facts.sellTaxPct === null ? 'Tidak tersedia' : scored.facts.sellTaxPct.toFixed(2) + '%') + '<br>Mint authority: ' + yesNo(scored.facts.mintAuthorityActive) + '<br>Freeze authority: ' + yesNo(scored.facts.freezeAuthorityActive) + '</p></div>' + holdersHtml + sniperHtml + rugpullHtml + chanceHtml + quoterHtml + chartHtml + '</div>' +
     '<p class="muted">Source: DexScreener' + (scored.facts.available ? ' + GoPlus' : '') + ' · Updated ' + new Date().toLocaleString('id-ID') + ' · Score adalah signal, bukan nasihat finansial.</p></div>';
   $('result').classList.remove('hidden');
   $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; try { const data = await backendAnalyze(currentAddress, currentMode, next.pairAddress); if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; render(data.pair, data.scored); return; } } catch { /* fallback to direct browser fetch */ } currentSecurity = await fetchSecurity(next, currentAddress, currentMode); const quoter = await fetchQuoter(next, currentAddress, currentMode); render(next, scorePair(next, currentPairs, currentSecurity, quoter)); });
