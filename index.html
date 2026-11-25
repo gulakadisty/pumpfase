@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pumpfase — Token Score Analyzer</title>
+  <meta name="description" content="Read-only EVM and Solana token score analyzer." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="Pumpfase home">
+      <img src="logo.webp" alt="Pumpfase logo" />
+      <span>pump<span>fase</span></span>
+    </a>
+    <nav class="nav" aria-label="Primary">
+      <a class="active" href="#top">Home</a>
+      <a href="#analyzer">Analyzer</a>
+      <a href="#methodology">Methodology</a>
+      <a href="#api">API</a>
+    </nav>
+    <div class="live"><span></span>Live</div>
+  </header>
+
+  <main id="top" class="hero">
+    <section class="hero-copy">
+      <h1>Check. Analyze.<br />Trade <strong>Smarter.</strong></h1>
+      <p>Get real token score and insights before you invest.</p>
+      <div class="hero-line"></div>
+      <div class="features">
+        <article><b>Token Score</b><span>Get clear score from 0–100</span></article>
+        <article><b>Risk Analysis</b><span>Know the potential risks</span></article>
+        <article><b>Real-Time Data</b><span>Powered by on-chain data</span></article>
+      </div>
+    </section>
+
+    <section id="analyzer" class="analyzer-card" aria-label="Analyze token">
+      <div class="card-head">
+        <h2>Analyze Token</h2>
+        <select id="chainMode" aria-label="Chain mode">
+          <option value="auto">Auto</option>
+          <option value="evm">EVM</option>
+          <option value="sol">SOL</option>
+        </select>
+      </div>
+      <label class="input-wrap">
+        <span>⌁</span>
+        <input id="addressInput" type="text" placeholder="Enter token contract address..." autocomplete="off" spellcheck="false" />
+      </label>
+      <button id="analyzeBtn" type="button">Analyze →</button>
+      <div class="samples">
+        <button type="button" data-sample="0x6982508145454Ce325dDbE47a25d4ec3d2311933" data-mode="evm">PEPE</button>
+        <button type="button" data-sample="DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" data-mode="sol">BONK</button>
+        <button type="button" data-sample="0x73BAcE4461E9bFD686E73994a91Dd1e4c01Ad6C9" data-mode="evm">ANTZ</button>
+      </div>
+      <p id="formError" class="error" role="alert"></p>
+    </section>
+  </main>
+
+  <section id="result" class="result hidden" aria-live="polite"></section>
+
+  <section id="methodology" class="methodology">
+    <h2>Methodology</h2>
+    <p>Pumpfase memberi score signal 0–100 dari gate eksekusi, likuiditas, momentum, kualitas pasar, dan risiko creator + bundle. Score bukan ramalan harga dan bukan nasihat finansial.</p>
+  </section>
+
+  <section id="api" class="methodology">
+    <h2>Data sources</h2>
+    <p>Pair data: DexScreener. Security and holder signals: GoPlus when available. Creator and bundle readings are heuristics, not proof.</p>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
