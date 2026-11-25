@@ -227,7 +227,7 @@ function render(pair, scored) {
     '<div class="panel"><span>Security</span><p>Honeypot: ' + yesNo(scored.facts.honeypot) + '<br>Cannot sell all: ' + yesNo(scored.facts.cannotSellAll) + '<br>Buy tax: ' + (scored.facts.buyTaxPct === null ? 'Tidak tersedia' : scored.facts.buyTaxPct.toFixed(2) + '%') + '<br>Sell tax: ' + (scored.facts.sellTaxPct === null ? 'Tidak tersedia' : scored.facts.sellTaxPct.toFixed(2) + '%') + '<br>Mint authority: ' + yesNo(scored.facts.mintAuthorityActive) + '<br>Freeze authority: ' + yesNo(scored.facts.freezeAuthorityActive) + '</p></div>' + holdersHtml + sniperHtml + quoterHtml + chartHtml + '</div>' +
     '<p class="muted">Source: DexScreener' + (scored.facts.available ? ' + GoPlus' : '') + ' · Updated ' + new Date().toLocaleString('id-ID') + ' · Score adalah signal, bukan nasihat finansial.</p></div>';
   $('result').classList.remove('hidden');
-  $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; currentSecurity = await fetchSecurity(next, currentAddress, currentMode); const quoter = await fetchQuoter(next, currentAddress, currentMode); render(next, scorePair(next, currentPairs, currentSecurity, quoter)); });
+  $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; try { const data = await backendAnalyze(currentAddress, currentMode, next.pairAddress); if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; render(data.pair, data.scored); return; } } catch { /* fallback to direct browser fetch */ } currentSecurity = await fetchSecurity(next, currentAddress, currentMode); const quoter = await fetchQuoter(next, currentAddress, currentMode); render(next, scorePair(next, currentPairs, currentSecurity, quoter)); });
   document.querySelectorAll('[data-range]').forEach((button) => button.addEventListener('click', () => loadChart(pair, button.dataset.range)));
   loadChart(pair, '24J');
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -341,7 +341,19 @@ function chartSvg(candles) {
 async function loadChart(pair, range) {
   const box = $('chartBox'); if (!box) return;
   box.innerHTML = '<p class="muted">Memuat chart...</p>';
+  try {
+    const backend = await fetch('/api/chart?chainId=' + encodeURIComponent(pair.chainId || '') + '&pairAddress=' + encodeURIComponent(pair.pairAddress || '') + '&tokenAddress=' + encodeURIComponent(pair.baseToken?.address || '') + '&range=' + encodeURIComponent(range));
+    if (backend.ok) {
+      const data = await backend.json();
+      if (Array.isArray(data.candles)) { box.innerHTML = chartSvg(data.candles); return; }
+    }
+  } catch { /* fallback to direct browser fetch */ }
   box.innerHTML = chartSvg(await fetchChart(pair, range));
+}
+async function backendAnalyze(address, mode, pairAddress) {
+  const res = await fetch('/api/analyze?address=' + encodeURIComponent(address) + '&mode=' + encodeURIComponent(mode) + (pairAddress ? '&pairAddress=' + encodeURIComponent(pairAddress) : ''));
+  if (!res.ok) throw new Error('backend unavailable');
+  return res.json();
 }
 
 async function analyze() {
@@ -351,6 +363,12 @@ async function analyze() {
   if (mode === 'invalid' || (mode === 'evm' && !isEvm(address)) || (mode === 'sol' && !isSolana(address))) { $('formError').textContent = 'Format alamat tidak dikenali. Masukkan alamat kontrak EVM (0x…) atau alamat Solana base58.'; return; }
   $('analyzeBtn').disabled = true; $('analyzeBtn').textContent = 'Analyzing...';
   try {
+    try {
+      const data = await backendAnalyze(address, mode);
+      currentAddress = address; currentMode = mode;
+      if (data.status === 'not_found') { $('result').innerHTML = '<div class="dashboard"><h2>Tidak bisa dieksekusi</h2><p>Tidak ditemukan pair aktif — tidak ada jalur swap yang bisa dipakai.</p><p>Tidak ada pair yang terdaftar untuk alamat ini di DexScreener. Token mungkin belum punya pasar, sudah delisted, atau alamatnya salah. Tanpa pair, tidak ada harga yang bisa dieksekusi — score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+      if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; render(data.pair, data.scored); return; }
+    } catch { /* fallback to direct browser fetch */ }
     const res = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + encodeURIComponent(address));
     const json = await res.json();
     currentPairs = (json.pairs || []).filter((p) => mode === 'sol' ? p.chainId === 'solana' : p.chainId !== 'solana').sort((a, b) => num(b.liquidity?.usd) - num(a.liquidity?.usd));
@@ -377,6 +395,25 @@ async function loadLeaderboard() {
   const box = $('leaderboardList');
   if (!box) return;
   try {
+    try {
+      const backend = await fetch('/api/trending');
+      if (backend.ok) {
+        const data = await backend.json();
+        if (Array.isArray(data.tokens) && data.tokens.length) {
+          box.innerHTML = data.tokens.map((token, i) => {
+            const mode = token.chainId === 'solana' ? 'sol' : 'evm';
+            return '<div class="leader-row"><div class="rank">' + (i + 1) + '</div>' +
+              '<div class="leader-token"><b>' + esc(token.symbol || token.name || 'Token') + '</b><span>' + esc(token.name || '') + ' · ' + esc(token.chainId) + '</span></div>' +
+              '<div class="leader-stat"><span>Price</span><b>' + money(token.priceUsd) + '</b></div>' +
+              '<div class="leader-stat"><span>24h</span><b>' + pct(token.priceChangeH24) + '</b></div>' +
+              '<div class="leader-stat"><span>Boost</span><b>' + esc(token.boostAmount ?? '-') + '</b></div>' +
+              '<div class="leader-actions"><a href="' + esc(token.url || '#') + '" target="_blank" rel="noreferrer">Dex</a><button type="button" data-leader-address="' + esc(token.address) + '" data-leader-mode="' + mode + '">Analyze</button></div></div>';
+          }).join('');
+          box.querySelectorAll('[data-leader-address]').forEach((button) => button.addEventListener('click', () => { $('addressInput').value = button.dataset.leaderAddress; $('chainMode').value = button.dataset.leaderMode; analyze(); }));
+          return;
+        }
+      }
+    } catch { /* fallback to direct browser fetch */ }
     const res = await fetch('https://api.dexscreener.com/token-boosts/latest/v1');
     const json = await res.json();
     const boosts = (Array.isArray(json) ? json : []).slice(0, 10);
