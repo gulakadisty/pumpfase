@@ -29,16 +29,18 @@ function firstValue(obj, keys) { for (const key of keys) { if (obj && obj[key] !
 
 async function fetchSecurity(pair, address, mode) {
   try {
+    const headers = { accept: 'application/json', 'user-agent': 'Pumpfase/1.0' };
     if (mode === 'sol') {
-      const res = await fetch('https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=' + encodeURIComponent(address));
+      const res = await fetch('https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=' + encodeURIComponent(address), { headers });
       const json = await res.json();
       return json?.result?.[address] || null;
     }
     const chainId = EVM_CHAIN_IDS[pair.chainId];
     if (!chainId) return null;
-    const res = await fetch('https://api.gopluslabs.io/api/v1/token_security/' + chainId + '?contract_addresses=' + encodeURIComponent(address));
+    const lowerAddress = address.toLowerCase();
+    const res = await fetch('https://api.gopluslabs.io/api/v1/token_security/' + chainId + '?contract_addresses=' + encodeURIComponent(lowerAddress), { headers });
     const json = await res.json();
-    return json?.result?.[address.toLowerCase()] || json?.result?.[address] || null;
+    return json?.result?.[lowerAddress] || json?.result?.[address] || null;
   } catch { return null; }
 }
 
@@ -283,7 +285,7 @@ function render(pair, scored) {
     '<div class="panel"><span>Security</span><p>Honeypot: ' + yesNo(scored.facts.honeypot) + '<br>Cannot sell all: ' + yesNo(scored.facts.cannotSellAll) + '<br>Buy tax: ' + (scored.facts.buyTaxPct === null ? 'Tidak tersedia' : scored.facts.buyTaxPct.toFixed(2) + '%') + '<br>Sell tax: ' + (scored.facts.sellTaxPct === null ? 'Tidak tersedia' : scored.facts.sellTaxPct.toFixed(2) + '%') + '<br>Mint authority: ' + yesNo(scored.facts.mintAuthorityActive) + '<br>Freeze authority: ' + yesNo(scored.facts.freezeAuthorityActive) + '</p></div>' + holdersHtml + sniperHtml + rugpullHtml + chanceHtml + quoterHtml + chartHtml + '</div>' +
     '<p class="muted">Source: DexScreener' + (scored.facts.available ? ' + GoPlus' : '') + ' · Updated ' + new Date().toLocaleString('id-ID') + ' · Score adalah signal, bukan nasihat finansial.</p></div>';
   $('result').classList.remove('hidden');
-  $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; try { const data = await backendAnalyze(currentAddress, currentMode, next.pairAddress); if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; render(data.pair, data.scored); return; } } catch { /* fallback to direct browser fetch */ } currentSecurity = await fetchSecurity(next, currentAddress, currentMode); const quoter = await fetchQuoter(next, currentAddress, currentMode); render(next, scorePair(next, currentPairs, currentSecurity, quoter)); });
+  $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; try { const data = await backendAnalyze(currentAddress, currentMode, next.pairAddress); if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; if (!data.scored.facts.available) { const browserSecurity = await fetchSecurity(data.pair, currentAddress, currentMode); if (browserSecurity) { currentSecurity = browserSecurity; render(data.pair, scorePair(data.pair, data.pairs, browserSecurity, data.scored.quoter)); return; } } render(data.pair, data.scored); return; } } catch { /* fallback to direct browser fetch */ } currentSecurity = await fetchSecurity(next, currentAddress, currentMode); const quoter = await fetchQuoter(next, currentAddress, currentMode); render(next, scorePair(next, currentPairs, currentSecurity, quoter)); });
   document.querySelectorAll('[data-range]').forEach((button) => button.addEventListener('click', () => loadChart(pair, button.dataset.range)));
   loadChart(pair, '24J');
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -423,7 +425,7 @@ async function analyze() {
       const data = await backendAnalyze(address, mode);
       currentAddress = address; currentMode = mode;
       if (data.status === 'not_found') { $('result').innerHTML = '<div class="dashboard"><h2>Tidak bisa dieksekusi</h2><p>Tidak ditemukan pair aktif — tidak ada jalur swap yang bisa dipakai.</p><p>Tidak ada pair yang terdaftar untuk alamat ini di DexScreener. Token mungkin belum punya pasar, sudah delisted, atau alamatnya salah. Tanpa pair, tidak ada harga yang bisa dieksekusi — score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
-      if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; render(data.pair, data.scored); return; }
+      if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; if (!data.scored.facts.available) { const browserSecurity = await fetchSecurity(data.pair, currentAddress, currentMode); if (browserSecurity) { currentSecurity = browserSecurity; render(data.pair, scorePair(data.pair, data.pairs, browserSecurity, data.scored.quoter)); return; } } render(data.pair, data.scored); return; }
     } catch { /* fallback to direct browser fetch */ }
     const res = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + encodeURIComponent(address));
     const json = await res.json();
