@@ -205,3 +205,5 @@ footer span { color: #fff; font-weight: 800; }
   .score-ring { width: 190px; height: 190px; }
   .score-ring > div { width: 144px; height: 144px; }
 }
+
+.chart-switch{display:flex;gap:8px;margin:8px 0}.chart-switch button{background:rgba(52,255,140,.12);color:#dfffe9;border:1px solid rgba(52,255,140,.35);border-radius:999px;padding:4px 10px;cursor:pointer}#chartBox svg{width:100%;height:auto;display:block}

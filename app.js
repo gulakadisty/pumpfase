@@ -91,7 +91,7 @@ function securityFacts(security) {
   return { available: true, honeypot, cannotSellAll, creatorPct, creatorAddress: firstValue(security, ['creator_address', 'creatorAddress']) || '', ownerAddress: firstValue(security, ['owner_address', 'ownerAddress']) || '', top10Pct, top10NonContractPct, bundleSharePct, bundleWalletCount, holderCount: Number.isFinite(holderCountRaw) ? holderCountRaw : null, mintable, proxy, openSource, buyTaxPct, sellTaxPct, mintAuthorityActive, freezeAuthorityActive, topHolders, notes };
 }
 
-function scorePair(pair, pairs, security) {
+function scorePair(pair, pairs, security, quoter) {
   const facts = securityFacts(security);
   const liquidity = num(pair.liquidity?.usd);
   const fdv = num(pair.fdv || pair.marketCap);
@@ -163,10 +163,13 @@ function scorePair(pair, pairs, security) {
   const caps = [];
   if (liquidity < 1000) { cap = 20; capReason = 'Likuiditas di bawah $1.000, score dibatasi 20 dan status tidak bisa dieksekusi.'; caps.push(capReason); }
   if (facts.honeypot || facts.cannotSellAll) { cap = 20; capReason = 'Sinyal honeypot / tidak bisa dijual membuat score dibatasi 20.'; caps.push(capReason); }
+  const quoterMaxImpact = quoter ? Math.max(num(quoter.buy?.priceImpactPct, 0), num(quoter.sell?.priceImpactPct, 0)) : null;
+  if (quoter && quoter.supported && (!quoter.buy || !quoter.sell)) { cap = 20; capReason = 'Route swap nyata tidak ditemukan via quoter ' + quoter.source + ' untuk ±$100 — score dibatasi 20.'; caps.push(capReason); }
+  else if (quoter && quoterMaxImpact !== null && quoterMaxImpact > 25) { cap = 45; capReason = 'Price impact quoter di atas 25% untuk ±$100 — score dibatasi 45.'; caps.push(capReason); }
   if (cap !== null) score = Math.min(score, cap);
   score = Math.round(clamp(score));
-  const executable = liquidity >= 1000 && !facts.honeypot && !facts.cannotSellAll;
-  const execution = { status: executable ? 'Bisa dieksekusi' : 'Tidak bisa dieksekusi', detail: executable ? 'Pair aktif dengan likuiditas yang cukup untuk dieksekusi pada ukuran ritel.' : 'Pair tidak punya likuiditas aktif yang cukup atau terdeteksi risiko jual, jadi swap tidak dianggap aman dieksekusi.' };
+  const executable = liquidity >= 1000 && !facts.honeypot && !facts.cannotSellAll && !(quoter && quoter.supported && (!quoter.buy || !quoter.sell));
+  const execution = quoter && quoter.supported && quoter.buy && quoter.sell && quoterMaxImpact > 25 ? { status: 'Likuiditas sangat tipis', detail: 'Route swap nyata ditemukan via quoter ' + quoter.source + ', tapi price impact ±$100 di atas 25% — swap kecil pun menggerakkan harga secara ekstrem.' } : quoter && quoter.supported && quoter.buy && quoter.sell ? { status: 'Bisa dieksekusi', detail: 'Route swap nyata ditemukan via quoter ' + quoter.source + ' untuk beli & jual (±$100) — terverifikasi bisa dieksekusi, bukan cuma dari likuiditas pair.' } : { status: executable ? 'Bisa dieksekusi' : 'Tidak bisa dieksekusi', detail: executable ? 'Pair aktif dengan likuiditas yang cukup untuk dieksekusi pada ukuran ritel.' : 'Pair tidak punya likuiditas aktif yang cukup atau terdeteksi risiko jual, jadi swap tidak dianggap aman dieksekusi.' };
   const bias = score >= 70 ? 'Naik' : score >= 45 ? 'Netral' : 'Turun';
   const confidence = !executable ? 'Rendah' : (facts.available && volume24 > 10000 ? 'Tinggi' : volume24 > 1000 ? 'Sedang' : 'Rendah');
   const sniperWalletsAll = facts.topHolders.filter((h) => !h.isContract && !h.isLocked && h.percent >= 0.5 && (!facts.creatorAddress || String(h.address).toLowerCase() !== String(facts.creatorAddress).toLowerCase()));
@@ -179,7 +182,7 @@ function scorePair(pair, pairs, security) {
   sniperNotes.push(sniperWalletsAll.length ? sniperWalletsAll.length + ' wallet non-kontrak berukuran sniper (masing-masing ≥0,5% supply) di top holder menguasai total ' + sniperShare.toFixed(1) + '% supply — makin besar, makin besar risiko dump mendadak dari pembeli awal.' : 'Tidak ada wallet non-kontrak berukuran sniper (≥0,5% supply) di top holder selain creator — kepemilikan awal terlihat menyebar.');
   if (firstHourVolumeSharePct !== null && firstHourVolumeSharePct >= 50) sniperNotes.push(firstHourVolumeSharePct.toFixed(1) + '% volume 24 jam terjadi di 1 jam terakhir — aktivitas terkonsentrasi di jendela singkat adalah pola khas perburuan sniper/bot.');
   const sniper = { sharePct: sniperShare, walletCount: sniperWalletsAll.length, wallets: sniperWalletsAll.slice(0, 5).map((h) => ({ address: h.address, percent: h.percent })), phase: sniperPhase, pairAgeHours, firstHourVolumeSharePct, level: sniperShare === null ? 'Tidak terdeteksi' : sniperShare >= 20 ? 'Tinggi' : sniperShare >= 10 ? 'Sedang' : 'Rendah', notes: sniperNotes };
-  return { score, rawScore, cap, capReason, bias, confidence, executable, execution, caps, facts, factors, sniper, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
+  return { score, rawScore, cap, capReason, bias, confidence, executable, execution, caps, facts, factors, sniper, quoter, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
 }
 
 function bar(label, value) { return '<div class="bar-row"><div class="bar-label"><span>' + esc(label) + '</span><b>' + Math.round(value) + '</b></div><div class="bar"><i style="width:' + clamp(value) + '%"></i></div></div>'; }
@@ -195,6 +198,9 @@ function render(pair, scored) {
   const capHtml = scored.capReason ? '<div class="cap"><b>Kenapa score dibatasi</b><br>Raw score ' + scored.rawScore + ' dibatasi ke ' + scored.cap + '. ' + esc(scored.capReason) + '</div>' : '';
   const holdersHtml = scored.facts.topHolders.length ? '<div class="panel wide"><span>Top holders</span><table><tr><th>Wallet</th><th>Share</th><th>Type</th></tr>' + scored.facts.topHolders.map((h) => '<tr><td>' + esc(shortAddress(h.address)) + '</td><td>' + h.percent.toFixed(2) + '%</td><td>' + (h.isLocked ? 'Locked' : h.isContract ? 'Contract' : 'Wallet') + '</td></tr>').join('') + '</table></div>' : '';
   const sniperHtml = '<div class="panel wide"><span>Kepemilikan sniper</span><p>Fase: ' + esc(scored.sniper.phase) + '<br>Share sniper-like: ' + (scored.sniper.sharePct === null ? 'Tidak terdeteksi' : scored.sniper.sharePct.toFixed(1) + '%') + '<br>Wallet sniper-like: ' + scored.sniper.walletCount + '<br>Level: ' + esc(scored.sniper.level) + '<br>Volume 1 jam terakhir: ' + (scored.sniper.firstHourVolumeSharePct === null ? 'Tidak tersedia' : scored.sniper.firstHourVolumeSharePct.toFixed(1) + '% dari volume 24 jam') + '</p>' + (scored.sniper.wallets.length ? '<table><tr><th>Wallet sniper-like</th><th>Share</th></tr>' + scored.sniper.wallets.map((w) => '<tr><td>' + esc(shortAddress(w.address)) + '</td><td>' + w.percent.toFixed(2) + '%</td></tr>').join('') + '</table>' : '') + '<ul>' + scored.sniper.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul><p class="muted">Heuristik dari top holder saat ini, bukan pelacakan transaksi pertama.</p></div>';
+  const q = scored.quoter;
+  const quoterHtml = '<div class="panel wide"><span>Cek Swap Nyata (Quoter)</span>' + (q ? '<p>' + esc(q.verdict) + '<br>Beli ±$100: ' + (q.buy ? esc(q.buy.route) + ' · impact ' + q.buy.priceImpactPct.toFixed(2) + '%' : 'route tidak ditemukan') + '<br>Jual ±$100: ' + (q.sell ? esc(q.sell.route) + ' · impact ' + q.sell.priceImpactPct.toFixed(2) + '%' : 'route tidak ditemukan') + '<br>Sumber: ' + esc(q.source) + ' · Counter: ' + esc(q.counterSymbol) + '</p>' : '<p>Quoter tidak tersedia saat ini — status eksekusi memakai heuristik likuiditas.</p>') + '</div>';
+  const chartHtml = '<div class="panel wide"><span>Chart mini</span><div class="chart-switch"><button type="button" data-range="24J">24J</button><button type="button" data-range="7H">7H</button><button type="button" data-range="30H">30H</button></div><div id="chartBox"><p class="muted">Memuat chart...</p></div></div>';
   $('result').innerHTML = '<div class="dashboard">' +
     '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + (quoteSymbol ? ' · ' + esc(quoteSymbol) : '') + ' · Pair age ' + ageText(pair) + '</p><p><a href="' + esc(pair.url || '#') + '" target="_blank" rel="noreferrer">Lihat pair di DexScreener</a> · Pair ' + esc(shortAddress(pair.pairAddress)) + '</p></div></div>' +
     '<label>Pair <select id="pairSelect">' + pairOptions + '</select></label></div>' +
@@ -218,11 +224,101 @@ function render(pair, scored) {
     '<div class="panels"><div class="panel"><span>Estimasi slippage</span><table><tr><th>Trade</th><th>Impact</th></tr><tr><td>$10</td><td>' + slippageText(pair, 10) + '</td></tr><tr><td>$100</td><td>' + slippageText(pair, 100) + '</td></tr><tr><td>$1,000</td><td>' + slippageText(pair, 1000) + '</td></tr></table></div>' +
     '<div class="panel"><span>Creator</span><p>Creator: ' + esc(shortAddress(scored.facts.creatorAddress) || 'Tidak tersedia') + '<br>Creator share: ' + (scored.facts.creatorPct === null ? 'Tidak tersedia' : scored.facts.creatorPct.toFixed(2) + '%') + '<br>Owner: ' + esc(shortAddress(scored.facts.ownerAddress) || 'Tidak tersedia') + '<br>Mintable: ' + yesNo(scored.facts.mintable) + ' · Proxy: ' + yesNo(scored.facts.proxy) + ' · Open source: ' + yesNo(scored.facts.openSource) + '</p></div>' +
     '<div class="panel"><span>Bundle heuristic</span><p>Bundle share: ' + (scored.facts.bundleSharePct === null ? 'Tidak tersedia' : '±' + scored.facts.bundleSharePct.toFixed(1) + '%') + '<br>Bundle wallets: ' + scored.facts.bundleWalletCount + '<br>Top 10: ' + (scored.facts.top10Pct === null ? 'Tidak tersedia' : scored.facts.top10Pct.toFixed(1) + '%') + '<br>Top 10 non-contract: ' + (scored.facts.top10NonContractPct === null ? 'Tidak tersedia' : scored.facts.top10NonContractPct.toFixed(1) + '%') + '<br>Holders: ' + (scored.facts.holderCount === null ? 'Tidak tersedia' : scored.facts.holderCount.toLocaleString('en-US')) + '</p></div>' +
-    '<div class="panel"><span>Security</span><p>Honeypot: ' + yesNo(scored.facts.honeypot) + '<br>Cannot sell all: ' + yesNo(scored.facts.cannotSellAll) + '<br>Buy tax: ' + (scored.facts.buyTaxPct === null ? 'Tidak tersedia' : scored.facts.buyTaxPct.toFixed(2) + '%') + '<br>Sell tax: ' + (scored.facts.sellTaxPct === null ? 'Tidak tersedia' : scored.facts.sellTaxPct.toFixed(2) + '%') + '<br>Mint authority: ' + yesNo(scored.facts.mintAuthorityActive) + '<br>Freeze authority: ' + yesNo(scored.facts.freezeAuthorityActive) + '</p></div>' + holdersHtml + sniperHtml + '</div>' +
+    '<div class="panel"><span>Security</span><p>Honeypot: ' + yesNo(scored.facts.honeypot) + '<br>Cannot sell all: ' + yesNo(scored.facts.cannotSellAll) + '<br>Buy tax: ' + (scored.facts.buyTaxPct === null ? 'Tidak tersedia' : scored.facts.buyTaxPct.toFixed(2) + '%') + '<br>Sell tax: ' + (scored.facts.sellTaxPct === null ? 'Tidak tersedia' : scored.facts.sellTaxPct.toFixed(2) + '%') + '<br>Mint authority: ' + yesNo(scored.facts.mintAuthorityActive) + '<br>Freeze authority: ' + yesNo(scored.facts.freezeAuthorityActive) + '</p></div>' + holdersHtml + sniperHtml + quoterHtml + chartHtml + '</div>' +
     '<p class="muted">Source: DexScreener' + (scored.facts.available ? ' + GoPlus' : '') + ' · Updated ' + new Date().toLocaleString('id-ID') + ' · Score adalah signal, bukan nasihat finansial.</p></div>';
   $('result').classList.remove('hidden');
-  $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; currentSecurity = await fetchSecurity(next, currentAddress, currentMode); render(next, scorePair(next, currentPairs, currentSecurity)); });
+  $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; currentSecurity = await fetchSecurity(next, currentAddress, currentMode); const quoter = await fetchQuoter(next, currentAddress, currentMode); render(next, scorePair(next, currentPairs, currentSecurity, quoter)); });
+  document.querySelectorAll('[data-range]').forEach((button) => button.addEventListener('click', () => loadChart(pair, button.dataset.range)));
+  loadChart(pair, '24J');
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+const EVM_QUOTER = {
+  ethereum: { network: 1, wrapped: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', rpc: 'https://eth.llamarpc.com' },
+  bsc: { network: 56, wrapped: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', symbol: 'WBNB', rpc: 'https://bsc-dataseed.binance.org' },
+  base: { network: 8453, wrapped: '0x4200000000000000000000000000000000000006', symbol: 'WETH', rpc: 'https://mainnet.base.org' },
+  arbitrum: { network: 42161, wrapped: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', symbol: 'WETH', rpc: 'https://arb1.arbitrum.io/rpc' },
+  polygon: { network: 137, wrapped: '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270', symbol: 'WMATIC', rpc: 'https://polygon-rpc.com' },
+  avalanche: { network: 43114, wrapped: '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7', symbol: 'WAVAX', rpc: 'https://api.avax.network/ext/bc/C/rpc' },
+  optimism: { network: 10, wrapped: '0x4200000000000000000000000000000000000006', symbol: 'WETH', rpc: 'https://mainnet.optimism.io' }
+};
+async function tokenDecimals(rpc, address) {
+  try {
+    const res = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: address, data: '0x313ce567' }, 'latest'] }) });
+    const json = await res.json();
+    const value = parseInt(json.result, 16);
+    return Number.isFinite(value) && value >= 0 && value <= 36 ? value : 18;
+  } catch { return 18; }
+}
+function paraswapRoute(route) {
+  const exchanges = [];
+  for (const hop of route?.bestRoute || []) for (const swap of hop.swaps || []) for (const ex of swap.swapExchanges || []) if (ex.exchange) exchanges.push(ex.exchange);
+  return exchanges.length ? [...new Set(exchanges)].join(' → ') : 'ParaSwap';
+}
+async function paraswapQuote(cfg, srcToken, destToken, amount, srcDecimals, destDecimals) {
+  const url = 'https://apiv5.paraswap.io/prices?srcToken=' + srcToken + '&destToken=' + destToken + '&amount=' + amount + '&srcDecimals=' + srcDecimals + '&destDecimals=' + destDecimals + '&side=SELL&network=' + cfg.network;
+  const res = await fetch(url);
+  const json = await res.json();
+  return json.priceRoute || null;
+}
+async function fetchQuoter(pair, address, mode) {
+  const priceUsd = num(pair.priceUsd); const priceNative = num(pair.priceNative);
+  if (!priceUsd || !priceNative) return null;
+  const tokenUi = 100 / priceUsd;
+  try {
+    if (mode === 'sol') {
+      const solMint = 'So11111111111111111111111111111111111111112';
+      const lamports = Math.max(1, Math.round(tokenUi * priceNative * 1e9));
+      const buyRes = await fetch('https://quote-api.jup.ag/v6/quote?inputMint=' + solMint + '&outputMint=' + encodeURIComponent(address) + '&amount=' + lamports + '&slippageBps=100');
+      const buyJson = await buyRes.json();
+      const buy = buyJson && buyJson.outAmount ? { inAmount: String(lamports), outAmount: String(buyJson.outAmount), outAmountUi: num(buyJson.outAmount) / 1e6, priceImpactPct: num(buyJson.priceImpactPct), route: (buyJson.routePlan || []).map((r) => r.swapInfo?.label).filter(Boolean).join(' → ') || 'Jupiter' } : null;
+      let sell = null;
+      if (buy) {
+        const sellRes = await fetch('https://quote-api.jup.ag/v6/quote?inputMint=' + encodeURIComponent(address) + '&outputMint=' + solMint + '&amount=' + buy.outAmount + '&slippageBps=100');
+        const sellJson = await sellRes.json();
+        if (sellJson && sellJson.outAmount) sell = { inAmount: buy.outAmount, outAmount: String(sellJson.outAmount), outAmountUi: num(sellJson.outAmount) / 1e9, priceImpactPct: num(sellJson.priceImpactPct), route: (sellJson.routePlan || []).map((r) => r.swapInfo?.label).filter(Boolean).join(' → ') || 'Jupiter' };
+      }
+      return { supported: true, source: 'Jupiter', counterSymbol: 'SOL', tradeUsd: 100, buy, sell, verdict: buy && sell ? 'Route beli & jual ditemukan via Jupiter — swap ±$100 benar-benar bisa dieksekusi, bukan cuma harga pajangan.' : 'Route swap nyata tidak ditemukan via Jupiter untuk ±$100.' };
+    }
+    const cfg = EVM_QUOTER[pair.chainId];
+    if (!cfg) return { supported: false, source: 'ParaSwap', counterSymbol: pair.quoteToken?.symbol || '', tradeUsd: 100, buy: null, sell: null, verdict: 'Chain ini di luar jangkauan quoter ParaSwap — status eksekusi memakai heuristik likuiditas.' };
+    const decimals = await tokenDecimals(cfg.rpc, address);
+    const wrappedWei = BigInt(Math.max(1, Math.round(tokenUi * priceNative * 1e18))).toString();
+    const buyRoute = await paraswapQuote(cfg, cfg.wrapped, address, wrappedWei, 18, decimals);
+    const buy = buyRoute ? { inAmount: wrappedWei, outAmount: String(buyRoute.destAmount), outAmountUi: num(buyRoute.destAmount) / 10 ** decimals, priceImpactPct: Math.round((1 - (num(buyRoute.destAmount) / 10 ** decimals) / tokenUi) * 1000) / 10, route: paraswapRoute(buyRoute) } : null;
+    let sell = null;
+    if (buy) {
+      const sellRoute = await paraswapQuote(cfg, address, cfg.wrapped, buy.outAmount, decimals, 18);
+      if (sellRoute) sell = { inAmount: buy.outAmount, outAmount: String(sellRoute.destAmount), outAmountUi: num(sellRoute.destAmount) / 1e18, priceImpactPct: Math.round((1 - (num(sellRoute.destAmount) / 1e18) / (buy.outAmountUi * priceNative)) * 1000) / 10, route: paraswapRoute(sellRoute) };
+    }
+    return { supported: true, source: 'ParaSwap', counterSymbol: cfg.symbol, tradeUsd: 100, buy, sell, verdict: buy && sell ? 'Route beli & jual ditemukan via ParaSwap — swap ±$100 benar-benar bisa dieksekusi, bukan cuma harga pajangan.' : 'Route swap nyata tidak ditemukan via ParaSwap untuk ±$100.' };
+  } catch { return null; }
+}
+const GT_NETWORKS = { ethereum: 'eth', solana: 'solana', bsc: 'bsc', base: 'base', arbitrum: 'arbitrum', polygon: 'polygon_pos', avalanche: 'avax', optimism: 'optimism' };
+async function fetchChart(pair, range) {
+  const network = GT_NETWORKS[pair.chainId];
+  if (!network || !pair.pairAddress) return [];
+  const cfg = range === '7H' ? ['hour', 1, 168] : range === '30H' ? ['hour', 12, 60] : ['minute', 15, 96];
+  try {
+    const res = await fetch('https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + encodeURIComponent(pair.pairAddress) + '/ohlcv/' + cfg[0] + '?aggregate=' + cfg[1] + '&limit=' + cfg[2]);
+    const json = await res.json();
+    const list = json.data?.attributes?.ohlcv_list || [];
+    return list.map((c) => ({ t: c[0], o: c[1], h: c[2], l: c[3], c: c[4], v: c[5] })).sort((a, b) => a.t - b.t);
+  } catch { return []; }
+}
+function chartSvg(candles) {
+  if (!candles.length) return '<p class="muted">Chart belum tersedia — pool belum terindeks GeckoTerminal.</p>';
+  const closes = candles.map((c) => c.c); const min = Math.min(...closes); const max = Math.max(...closes); const span = max - min || max || 1;
+  const points = closes.map((v, i) => (i / Math.max(1, closes.length - 1) * 560).toFixed(1) + ',' + (110 - (v - min) / span * 100).toFixed(1)).join(' ');
+  const maxVol = Math.max(...candles.map((c) => c.v || 0)) || 1;
+  const bars = candles.map((c, i) => '<rect x="' + (i / candles.length * 560).toFixed(1) + '" y="' + (140 - (c.v || 0) / maxVol * 24).toFixed(1) + '" width="3" height="' + ((c.v || 0) / maxVol * 24).toFixed(1) + '" fill="rgba(52,255,140,.35)"/>').join('');
+  const change = closes[0] ? (closes[closes.length - 1] / closes[0] - 1) * 100 : 0;
+  return '<svg viewBox="0 0 560 145" role="img" aria-label="Chart harga"><polyline points="' + points + '" fill="none" stroke="#34ff8c" stroke-width="2"/>' + bars + '</svg><p class="muted">' + candles.length + ' candle · perubahan ' + change.toFixed(2) + '%</p>';
+}
+async function loadChart(pair, range) {
+  const box = $('chartBox'); if (!box) return;
+  box.innerHTML = '<p class="muted">Memuat chart...</p>';
+  box.innerHTML = chartSvg(await fetchChart(pair, range));
 }
 
 async function analyze() {
@@ -239,7 +335,8 @@ async function analyze() {
     if (!currentPairs.length) { $('result').innerHTML = '<div class="dashboard"><h2>Tidak bisa dieksekusi</h2><p>Tidak ditemukan pair aktif — tidak ada jalur swap yang bisa dipakai.</p><p>Tidak ada pair yang terdaftar untuk alamat ini di DexScreener. Token mungkin belum punya pasar, sudah delisted, atau alamatnya salah. Tanpa pair, tidak ada harga yang bisa dieksekusi — score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     const pair = currentPairs[0];
     currentSecurity = await fetchSecurity(pair, address, mode);
-    render(pair, scorePair(pair, currentPairs, currentSecurity));
+    const quoter = await fetchQuoter(pair, address, mode);
+    render(pair, scorePair(pair, currentPairs, currentSecurity, quoter));
   } catch { $('formError').textContent = 'Gagal mengambil data pair. Coba lagi sebentar.'; }
   finally { $('analyzeBtn').disabled = false; $('analyzeBtn').innerHTML = 'Analyze <span>→</span>'; }
 }
