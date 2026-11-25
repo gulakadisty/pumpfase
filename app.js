@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+function esc(value) { return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])); }
 const EVM_CHAIN_IDS = { ethereum: 1, bsc: 56, base: 8453, polygon: 137, arbitrum: 42161, optimism: 10, avalanche: 43114 };
 let currentPairs = [];
 let currentSecurity = null;
@@ -90,10 +91,10 @@ function bar(label, value) { return '<div class="bar-row"><div class="bar-label"
 
 function render(pair, scored) {
   const token = pair.baseToken || {};
-  const pairOptions = currentPairs.map((p, i) => '<option value="' + i + '"' + (p === pair ? ' selected' : '') + '>' + p.chainId + ' · ' + (p.dexId || 'DEX') + ' · ' + compact(p.liquidity?.usd) + '</option>').join('');
+  const pairOptions = currentPairs.map((p, i) => '<option value="' + i + '"' + (p === pair ? ' selected' : '') + '>' + esc(p.chainId) + ' · ' + esc(p.dexId || 'DEX') + ' · ' + compact(p.liquidity?.usd) + '</option>').join('');
   const capHtml = scored.caps.length ? '<div class="cap"><b>Kenapa score dibatasi</b><br>' + scored.caps.join('<br>') + '</div>' : '';
   $('result').innerHTML = '<div class="dashboard">' +
-    '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + pair.info.imageUrl + '" alt="" />' : '') + '<div><h2>' + (token.name || 'Token') + ' <span class="muted">' + (token.symbol || '') + '</span></h2><p>' + pair.chainId + ' · ' + (pair.dexId || 'DEX') + ' · Pair age ' + ageText(pair) + '</p></div></div>' +
+    '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + ' · Pair age ' + ageText(pair) + '</p></div></div>' +
     '<label>Pair <select id="pairSelect">' + pairOptions + '</select></label></div>' +
     '<div class="score-grid"><div><div class="score-ring" style="--score:' + scored.score + '"><div><span><b>' + scored.score + '</b><br>Score</span></div></div></div><div>' +
     '<div class="badges"><span class="badge ' + (scored.bias === 'Naik' ? 'good' : scored.bias === 'Turun' ? 'bad' : 'warn') + '">Bias ' + scored.bias + '</span><span class="badge">Confidence ' + scored.confidence + '</span><span class="badge ' + (scored.executable ? 'good' : 'bad') + '">' + (scored.executable ? 'Bisa dieksekusi' : 'Tidak bisa dieksekusi') + '</span></div>' +
@@ -131,3 +132,38 @@ async function analyze() {
 $('analyzeBtn').addEventListener('click', analyze);
 $('addressInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') analyze(); });
 document.querySelectorAll('[data-sample]').forEach((button) => button.addEventListener('click', () => { $('addressInput').value = button.dataset.sample; $('chainMode').value = button.dataset.mode; analyze(); }));
+
+async function fetchBestPair(address) {
+  const res = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + encodeURIComponent(address));
+  const json = await res.json();
+  return (json.pairs || []).sort((a, b) => num(b.liquidity?.usd) - num(a.liquidity?.usd))[0] || null;
+}
+
+async function loadLeaderboard() {
+  const box = $('leaderboardList');
+  if (!box) return;
+  try {
+    const res = await fetch('https://api.dexscreener.com/token-boosts/latest/v1');
+    const json = await res.json();
+    const items = (Array.isArray(json) ? json : []).map((item) => item.tokenAddress || item.address).filter(Boolean).slice(0, 6);
+    const pairs = (await Promise.allSettled(items.map(fetchBestPair))).map((r) => r.status === 'fulfilled' ? r.value : null).filter(Boolean);
+    if (!pairs.length) throw new Error('empty');
+    box.innerHTML = pairs.map((pair, i) => {
+      const token = pair.baseToken || {};
+      const quick = scorePair(pair, [pair], null);
+      const address = token.address || '';
+      const mode = pair.chainId === 'solana' ? 'sol' : 'evm';
+      return '<div class="leader-row"><div class="rank">' + (i + 1) + '</div>' +
+        '<div class="leader-token"><b>' + esc(token.symbol || token.name || 'Token') + '</b><span>' + esc(token.name || '') + ' · ' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + '</span></div>' +
+        '<div class="leader-stat"><span>Liquidity</span><b>' + compact(pair.liquidity?.usd) + '</b></div>' +
+        '<div class="leader-stat"><span>24h</span><b>' + pct(pair.priceChange?.h24) + '</b></div>' +
+        '<div class="leader-stat"><span>Quick signal</span><b>' + quick.score + ' · ' + quick.bias + '</b></div>' +
+        '<button type="button" data-leader-address="' + esc(address) + '" data-leader-mode="' + mode + '">Analyze</button></div>';
+    }).join('');
+    box.querySelectorAll('[data-leader-address]').forEach((button) => button.addEventListener('click', () => { $('addressInput').value = button.dataset.leaderAddress; $('chainMode').value = button.dataset.leaderMode; analyze(); }));
+  } catch {
+    box.innerHTML = '<p class="muted">Leaderboard live belum tersedia. Pakai Analyze Token untuk cek token secara langsung.</p>';
+  }
+}
+
+loadLeaderboard();

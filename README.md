@@ -2,6 +2,8 @@
 
 Read-only EVM and Solana token score analyzer.
 
+Live: https://gulakadisty.github.io/pumpfase/
+
 Paste a token contract address and Pumpfase returns:
 
 - Score 0–100
@@ -12,6 +14,7 @@ Paste a token contract address and Pumpfase returns:
 - Slippage estimates for $10 / $100 / $1,000
 - Per-factor score breakdown
 - Creator and bundle heuristic panels
+- Trending token leaderboard snapshot
 
 ## Scoring
 
