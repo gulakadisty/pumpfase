@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Pumpfase — Token Score Analyzer</title>
   <meta name="description" content="Read-only EVM and Solana token score analyzer with execution gate, risk analysis, and live pair data." />
-  <link rel="stylesheet" href="styles.css?v=20261126-4" />
+  <link rel="stylesheet" href="styles.css?v=20261126-5" />
 </head>
 <body>
   <header class="topbar">
@@ -58,11 +58,6 @@
         <input id="addressInput" type="text" placeholder="Enter token contract address..." autocomplete="off" spellcheck="false" />
       </label>
       <button id="analyzeBtn" type="button">Analyze <span>→</span></button>
-      <div class="samples">
-        <button type="button" data-sample="0x6982508145454Ce325dDbE47a25d4ec3d2311933" data-mode="evm">PEPE</button>
-        <button type="button" data-sample="DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" data-mode="sol">BONK</button>
-        <button type="button" data-sample="0x73BAcE4461E9bFD686E73994a91Dd1e4c01Ad6C9" data-mode="evm">ANTZ</button>
-      </div>
       <p id="formError" class="error" role="alert"></p>
       <p class="card-note">Read-only. No wallet connection. Score is a signal, not financial advice.</p>
     </section>
@@ -103,6 +98,6 @@
     <p>Read-only token score analyzer for EVM and Solana.</p>
   </footer>
 
-  <script src="app.js?v=20261126-4"></script>
+  <script src="app.js?v=20261126-5"></script>
 </body>
 </html>

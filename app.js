@@ -235,7 +235,6 @@ async function analyze() {
 
 $('analyzeBtn').addEventListener('click', analyze);
 $('addressInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') analyze(); });
-document.querySelectorAll('[data-sample]').forEach((button) => button.addEventListener('click', () => { $('addressInput').value = button.dataset.sample; $('chainMode').value = button.dataset.mode; analyze(); }));
 
 async function fetchBestPair(address) {
   const res = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + encodeURIComponent(address));
