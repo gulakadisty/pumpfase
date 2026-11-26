@@ -18,6 +18,17 @@ function explorerUrl(chainId, address) { const base = EXPLORERS[String(chainId |
 function addressLink(chainId, address) { const s = String(address || '').trim(); if (!s) return 'Tidak tersedia'; const url = explorerUrl(chainId, s); const label = esc(shortAddress(s)); return url ? '<a class="address-link" href="' + esc(url) + '" target="_blank" rel="noreferrer" title="' + esc(s) + '">' + label + '</a>' : '<span title="' + esc(s) + '">' + label + '</span>'; }
 function ageText(pair) { if (!pair.pairCreatedAt) return 'Unknown'; const days = Math.max(0, (Date.now() - pair.pairCreatedAt) / 86400000); return days < 1 ? Math.round(days * 24) + 'h' : days.toFixed(days < 10 ? 1 : 0) + 'd'; }
 function launchText(pair) { if (!pair.pairCreatedAt) return 'tidak diketahui'; return new Date(pair.pairCreatedAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' WIB'; }
+function launchpadName(pair) {
+  const dex = String(pair.dexId || '').toLowerCase();
+  const addr = String(pair.baseToken?.address || '');
+  if (dex.includes('pumpswap') || dex.includes('pumpfun') || dex.includes('pump.fun') || addr.endsWith('pump')) return 'Pump.fun';
+  if (dex.includes('fourmeme') || dex.includes('four-meme') || dex.includes('four.meme')) return 'Four.meme';
+  if (dex.includes('moonshot')) return 'Moonshot';
+  if (dex.includes('boop')) return 'Boop.fun';
+  if (dex.includes('believe')) return 'Believe';
+  if (dex.includes('launchlab') || dex.includes('raydiumlaunchlab')) return 'Raydium LaunchLab';
+  return null;
+}
 function ageDays(pair) { return pair.pairCreatedAt ? Math.max(0, (Date.now() - pair.pairCreatedAt) / 86400000) : 0; }
 function isEvm(address) { return /^0x[a-fA-F0-9]{40}$/.test(address); }
 function isSolana(address) { return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address) && !address.startsWith('0x'); }
@@ -308,7 +319,7 @@ function render(pair, scored) {
   const creatorHistoryHtml = '<div class="panel wide"><span>Riwayat Creator</span><div id="creatorHistoryBox"><p class="muted">Memuat riwayat creator...</p></div></div>';
   const chartHtml = '<div class="panel wide"><span>Chart mini</span><div class="chart-switch"><button type="button" data-range="24J">24J</button><button type="button" data-range="7H">7H</button><button type="button" data-range="30H">30H</button></div><div id="chartBox"><p class="muted">Memuat chart...</p></div></div>';
   $('result').innerHTML = '<div class="dashboard">' +
-    '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + (quoteSymbol ? ' · ' + esc(quoteSymbol) : '') + ' · Pair age ' + ageText(pair) + ' · Diluncurkan ' + launchText(pair) + '</p><p><a href="' + esc(pair.url || '#') + '" target="_blank" rel="noreferrer">Lihat pair di DexScreener</a> · Pair ' + addressLink(pair.chainId, pair.pairAddress) + '</p></div></div>' +
+    '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + (quoteSymbol ? ' · ' + esc(quoteSymbol) : '') + ' · Pair age ' + ageText(pair) + ' · Diluncurkan ' + launchText(pair) + (launchpadName(pair) ? ' · Launchpad: ' + launchpadName(pair) : '') + '</p><p><a href="' + esc(pair.url || '#') + '" target="_blank" rel="noreferrer">Lihat pair di DexScreener</a> · Pair ' + addressLink(pair.chainId, pair.pairAddress) + '</p></div></div>' +
     '<label>Pair <select id="pairSelect">' + pairOptions + '</select></label></div>' +
     '<div class="score-grid"><div><div class="score-ring" style="--score:' + scored.score + ';--ring:' + ringColor(scored.score) + '"><div><span><b>' + scored.score + '</b><br>Score' + (scored.score < 45 ? '<br><span class="ring-risk">Berisiko</span>' : '') + '</span></div></div></div><div>' +
     '<div class="badges"><span class="badge ' + (scored.bias === 'Naik' ? 'good' : scored.bias === 'Turun' ? 'bad' : 'warn') + '">Sinyal: ' + (scored.bias === 'Naik' ? 'Cenderung Naik' : scored.bias === 'Turun' ? 'Cenderung Turun' : 'Campuran') + '</span><span class="badge">Data: ' + (scored.confidence === 'Tinggi' ? 'Cukup Lengkap' : scored.confidence === 'Sedang' ? 'Sebagian' : 'Terbatas') + '</span><span class="badge ' + (scored.execution.status === 'Bisa Diperjualbelikan' ? 'good' : scored.execution.status === 'Pasar Sangat Tipis — Hati-hati' ? 'warn' : 'bad') + '">' + scored.execution.status + '</span></div>' +
