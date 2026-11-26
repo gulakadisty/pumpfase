@@ -303,6 +303,7 @@ function render(pair, scored) {
   const chanceHtml = chance ? '<div class="panel wide"><span>Estimasi naik 24 jam</span><p>Naik: ' + chance.upPct + '% (range ' + chance.range[0] + '–' + chance.range[1] + '%)<br>Naik &gt;5%: ' + chance.up5Pct + '% (range ' + chance.up5Range[0] + '–' + chance.up5Range[1] + '%)</p><p class="muted">' + esc(chance.basis) + '</p><ul>' + chance.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul></div>' : '';
   const q = scored.quoter;
   const quoterHtml = '<div class="panel wide"><span>Cek Swap Nyata (Quoter)</span>' + (q ? '<p>' + esc(q.verdict) + '<br>Beli ±$100: ' + (q.buy ? esc(q.buy.route) + ' · impact ' + q.buy.priceImpactPct.toFixed(2) + '%' : 'route tidak ditemukan') + '<br>Jual ±$100: ' + (q.sell ? esc(q.sell.route) + ' · impact ' + q.sell.priceImpactPct.toFixed(2) + '%' : 'route tidak ditemukan') + '<br>Sumber: ' + esc(q.source) + ' · Counter: ' + esc(q.counterSymbol) + '</p>' : '<p>Quoter tidak tersedia saat ini — status eksekusi memakai heuristik likuiditas.</p>') + '</div>';
+  const creatorHistoryHtml = '<div class="panel wide"><span>Riwayat Creator</span><div id="creatorHistoryBox"><p class="muted">Memuat riwayat creator...</p></div></div>';
   const chartHtml = '<div class="panel wide"><span>Chart mini</span><div class="chart-switch"><button type="button" data-range="24J">24J</button><button type="button" data-range="7H">7H</button><button type="button" data-range="30H">30H</button></div><div id="chartBox"><p class="muted">Memuat chart...</p></div></div>';
   $('result').innerHTML = '<div class="dashboard">' +
     '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + (quoteSymbol ? ' · ' + esc(quoteSymbol) : '') + ' · Pair age ' + ageText(pair) + '</p><p><a href="' + esc(pair.url || '#') + '" target="_blank" rel="noreferrer">Lihat pair di DexScreener</a> · Pair ' + addressLink(pair.chainId, pair.pairAddress) + '</p></div></div>' +
@@ -318,13 +319,62 @@ function render(pair, scored) {
     '<div class="metric"><span>Market cap</span><b>' + compact(pair.marketCap || pair.fdv) + '</b></div>' +
     '<div class="metric"><span>Volume 24h</span><b>' + compact(pair.volume?.h24) + '</b></div>' +
     '<div class="metric"><span>Buy pressure 24h</span><b>' + buyPressure(pair).toFixed(1) + '%</b></div></div>' +
-    '<div class="panels">' + concentrationHtml + earlyHtml + rugpullHtml + chanceHtml + quoterHtml + chartHtml + '</div>' +
+    '<div class="panels">' + concentrationHtml + creatorHistoryHtml + earlyHtml + rugpullHtml + chanceHtml + quoterHtml + chartHtml + '</div>' +
     '<p class="muted">Source: DexScreener' + (scored.facts.available ? ' + GoPlus' : '') + ' · Updated ' + new Date().toLocaleString('id-ID') + ' · Score adalah signal, bukan nasihat finansial.</p></div>';
   $('result').classList.remove('hidden');
   $('pairSelect').addEventListener('change', async (event) => { const next = currentPairs[Number(event.target.value)]; try { const data = await backendAnalyze(currentAddress, currentMode, next.pairAddress); if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; if (!data.scored.facts.available) { const browserSecurity = await fetchSecurity(data.pair, currentAddress, currentMode); if (browserSecurity) { currentSecurity = browserSecurity; const browserEarly = data.scored.early?.available ? data.scored.early : await fetchEarlyAnalysis(data.pair, currentAddress, currentMode, browserSecurity); render(data.pair, scorePair(data.pair, data.pairs, browserSecurity, data.scored.quoter, browserEarly)); return; } } render(data.pair, data.scored); return; } } catch { /* fallback to direct browser fetch */ } currentSecurity = await fetchSecurity(next, currentAddress, currentMode); const quoter = await fetchQuoter(next, currentAddress, currentMode); const early = await fetchEarlyAnalysis(next, currentAddress, currentMode, currentSecurity); render(next, scorePair(next, currentPairs, currentSecurity, quoter, early)); });
   document.querySelectorAll('[data-range]').forEach((button) => button.addEventListener('click', () => loadChart(pair, button.dataset.range)));
   loadChart(pair, '24J');
+  loadCreatorHistory(pair, scored);
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadCreatorHistory(pair, scored) {
+  const box = $('creatorHistoryBox');
+  if (!box) return;
+  const creator = scored.facts.creatorAddress;
+  const valid = creator && (isEvm(creator) || isSolana(creator));
+  if (!valid) { box.innerHTML = '<p>Alamat deployer tidak tersedia dari data keamanan token ini.</p>'; return; }
+  const head = '<p>Deployer: ' + addressLink(pair.chainId, creator) + '</p>';
+  try {
+    if (isEvm(creator)) {
+      const scout = BLOCKSCOUT[pair.chainId];
+      if (!scout) { box.innerHTML = head + '<p class="muted">Riwayat deploy belum didukung untuk chain ini.</p>'; return; }
+      const fetchTxs = async (sort) => { const r = await fetch(scout + '/api?module=account&action=txlist&address=' + creator + '&sort=' + sort + '&page=1&offset=100'); const j = await r.json(); return Array.isArray(j.result) ? j.result : []; };
+      const [ascTxs, descTxs] = await Promise.all([fetchTxs('asc'), fetchTxs('desc')]);
+      const seen = new Map();
+      for (const tx of [...ascTxs, ...descTxs]) if (tx.contractAddress && String(tx.contractAddress).length >= 10) seen.set(tx.contractAddress.toLowerCase(), tx);
+      const creations = [...seen.values()].sort((a, b) => Number(b.timeStamp) - Number(a.timeStamp));
+      if (!creations.length) { box.innerHTML = head + '<p>Tidak ada pembuatan kontrak terdeteksi dari transaksi awal & terbaru deployer ini.</p>'; return; }
+      const latest = creations.slice(0, 5);
+      const infos = await Promise.all(latest.map(async (tx) => {
+        try { const r = await fetch(scout + '/api/v2/tokens/' + tx.contractAddress); const j = await r.json(); return j && j.symbol ? j.symbol : null; } catch { return null; }
+      }));
+      const rows = latest.map((tx, i) => '<tr><td>' + (infos[i] ? esc(infos[i]) : 'Kontrak') + '</td><td>' + addressLink(pair.chainId, tx.contractAddress) + '</td><td>' + new Date(Number(tx.timeStamp) * 1000).toLocaleDateString('id-ID') + '</td></tr>').join('');
+      box.innerHTML = head + '<p>Kontrak/token pernah dibuat: ' + creations.length + ' terdeteksi dari transaksi awal & terbaru deployer ini.</p>' + (creations.length >= 5 ? '<p><b>Pola deployer berulang</b> — creator ini membuat banyak token, perlu ekstra hati-hati.</p>' : '') + '<table><tr><th>Token</th><th>Alamat</th><th>Tanggal</th></tr>' + rows + '</table><p class="muted">Sumber: Blockscout. Daftar dari transaksi pembuatan kontrak deployer ini.</p>';
+      return;
+    }
+    const rpc = 'https://api.mainnet-beta.solana.com';
+    const call = async (method, params) => { const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }); const j = await r.json(); return j.result; };
+    const sigs = await call('getSignaturesForAddress', [creator, { limit: 50 }]);
+    const ok = (Array.isArray(sigs) ? sigs : []).filter((s) => !s.err).slice(0, 12);
+    const mints = [];
+    for (const s of ok) {
+      try {
+        const tx = await call('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]);
+        const all = [...(tx?.transaction?.message?.instructions || []), ...((tx?.meta?.innerInstructions || []).flatMap((g) => g.instructions || []))];
+        for (const ix of all) {
+          const type = ix.parsed?.type;
+          if ((type === 'initializeMint' || type === 'initializeMint2') && ix.parsed?.info?.mint) mints.push({ mint: ix.parsed.info.mint, time: s.blockTime });
+          if (ix.programId === '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P' && ix.accounts && ix.accounts[0]) mints.push({ mint: ix.accounts[0], time: s.blockTime });
+        }
+      } catch { /* skip one tx */ }
+    }
+    const unique = [...new Map(mints.map((m) => [m.mint, m])).values()].slice(0, 5);
+    if (!unique.length) { box.innerHTML = head + '<p>Tidak ada pembuatan token terdeteksi dari transaksi terbaru deployer ini.</p><p class="muted">Sumber: RPC publik Solana — deteksi dari transaksi pembuatan token, bisa tidak lengkap.</p>'; return; }
+    const rows = unique.map((m) => '<tr><td>' + addressLink('solana', m.mint) + '</td><td>' + (m.time ? new Date(m.time * 1000).toLocaleDateString('id-ID') : '-') + '</td></tr>').join('');
+    box.innerHTML = head + '<p>Token pernah dibuat: ' + unique.length + ' terdeteksi dari transaksi terbaru.</p>' + (unique.length >= 5 ? '<p><b>Pola deployer berulang</b> — creator ini membuat banyak token, perlu ekstra hati-hati.</p>' : '') + '<table><tr><th>Alamat token</th><th>Tanggal</th></tr>' + rows + '</table><p class="muted">Sumber: RPC publik Solana — deteksi dari transaksi pembuatan token, bisa tidak lengkap.</p>';
+  } catch { box.innerHTML = head + '<p class="muted">Riwayat creator tidak terjangkau saat ini.</p>'; }
 }
 
 const EVM_QUOTER = {
