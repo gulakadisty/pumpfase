@@ -278,7 +278,15 @@ function render(pair, scored) {
   const token = pair.baseToken || {};
   const quoteSymbol = pair.quoteToken?.symbol || '';
   const pairOptions = currentPairs.slice(0, 12).map((p, i) => '<option value="' + i + '"' + (p === pair ? ' selected' : '') + '>' + esc(p.chainId) + ' · ' + esc(p.dexId || 'DEX') + (p.quoteToken?.symbol ? ' · ' + esc(p.quoteToken.symbol) : '') + ' · ' + compact(p.liquidity?.usd) + '</option>').join('');
-  const capHtml = scored.capReason ? '<div class="cap"><b>Kenapa score dibatasi</b><br>Raw score ' + scored.rawScore + ' dibatasi ke ' + scored.cap + '. ' + esc(scored.capReason) + '</div>' : '';
+  const sortedFactors = [...scored.factors].sort((a, b) => b.score - a.score);
+  const strongest = sortedFactors[0];
+  const weakest = sortedFactors[sortedFactors.length - 1];
+  const reasonsHtml = '<div class="score-reasons"><b>Alasan Score</b><ul>' +
+    '<li>Kekuatan utama: ' + esc(strongest.label) + ' (' + strongest.score + '/100) — ' + esc(strongest.notes[0] || '') + '</li>' +
+    '<li>Penahan utama: ' + esc(weakest.label) + ' (' + weakest.score + '/100) — ' + esc(weakest.notes[0] || '') + '</li>' +
+    (scored.capReason ? '<li>Score dibatasi ke ' + scored.cap + ' dari raw ' + scored.rawScore + ': ' + esc(scored.capReason) + '</li>' : '') +
+    '<li>' + esc(scored.execution.status) + ' — ' + esc(scored.execution.detail) + '</li></ul></div>';
+  const capHtml = '';
   const concentrationHtml = '<div class="panel wide"><span>Konsentrasi Holder</span><p>Top 10: ' + (scored.facts.top10Pct === null ? 'Tidak tersedia' : scored.facts.top10Pct.toFixed(1) + '%') + ' · Top 10 non-contract: ' + (scored.facts.top10NonContractPct === null ? 'Tidak tersedia' : scored.facts.top10NonContractPct.toFixed(1) + '%') + '<br>Bundle: ' + (scored.facts.bundleSharePct === null ? 'Tidak tersedia' : '±' + scored.facts.bundleSharePct.toFixed(1) + '% (' + scored.facts.bundleWalletCount + ' wallet)') + ' · Sniper-like: ' + (scored.sniper.sharePct === null ? 'Tidak terdeteksi' : scored.sniper.sharePct.toFixed(1) + '% (' + scored.sniper.walletCount + ' wallet, level ' + esc(scored.sniper.level) + ')') + '<br>Creator share: ' + (scored.facts.creatorPct === null ? 'Tidak tersedia' : scored.facts.creatorPct.toFixed(2) + '%') + ' · Holders: ' + (scored.facts.holderCount === null ? 'Tidak tersedia' : scored.facts.holderCount.toLocaleString('en-US')) + '</p>' + (scored.facts.topHolders.length ? '<table><tr><th>Wallet</th><th>Share</th><th>Type</th></tr>' + scored.facts.topHolders.map((h) => '<tr><td>' + addressLink(pair.chainId, h.address) + '</td><td>' + h.percent.toFixed(2) + '%</td><td>' + (h.isLocked ? 'Locked' : h.isContract ? 'Contract' : 'Wallet') + '</td></tr>').join('') + '</table>' : '') + '<ul>' + scored.sniper.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul><p class="muted">Bundle dan sniper adalah heuristik dari top holder saat ini, bukan pelacakan transaksi pertama.</p></div>';
   const rug = scored.rugpull || { level: 'Tidak tersedia', points: 0, flags: [], mitigations: [], notes: [] };
   const early = scored.early || null;
@@ -295,7 +303,7 @@ function render(pair, scored) {
     '<label>Pair <select id="pairSelect">' + pairOptions + '</select></label></div>' +
     '<div class="score-grid"><div><div class="score-ring" style="--score:' + scored.score + ';--ring:' + ringColor(scored.score) + '"><div><span><b>' + scored.score + '</b><br>Score</span></div></div></div><div>' +
     '<div class="badges"><span class="badge ' + (scored.bias === 'Naik' ? 'good' : scored.bias === 'Turun' ? 'bad' : 'warn') + '">Bias ' + scored.bias + '</span><span class="badge">Confidence ' + scored.confidence + '</span><span class="badge ' + (scored.executable ? 'good' : 'bad') + '">' + scored.execution.status + '</span></div>' +
-    '<p class="execution-detail">' + esc(scored.execution.detail) + '</p>' + capHtml + '<div class="score-indicators">' + bar('Rugpull Risk', rug.points, 'rug') + (chance ? bar('Estimasi naik 24 jam', chance.upPct, 'chance') : '') + '</div></div></div>' +
+    reasonsHtml + '<div class="score-indicators">' + bar('Rugpull Risk', rug.points, 'rug') + (chance ? bar('Estimasi naik 24 jam', chance.upPct, 'chance') : '') + '</div></div></div>' +
     '<div class="factor-grid">' + scored.factors.map(factorCard).join('') + '</div>' +
     '<div class="metrics">' +
     '<div class="metric"><span>Price</span><b>' + money(pair.priceUsd) + '</b></div>' +

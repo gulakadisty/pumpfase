@@ -323,3 +323,7 @@ th, td { padding: 5px 0; font-size: 13px; }
   .metrics { grid-template-columns: 1fr 1fr; }
   .hero-copy h1 { font-size: 30px; }
 }
+
+.score-reasons { margin-top: 4px; }
+.score-reasons b { font-size: 15px; }
+.score-reasons ul { margin: 7px 0 0; padding-left: 18px; color: #dbe7dd; line-height: 1.5; font-size: 14px; }
