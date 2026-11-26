@@ -349,6 +349,21 @@ async function loadCreatorHistory(pair, scored) {
   const valid = creator && (isEvm(creator) || isSolana(creator));
   if (!valid) { box.innerHTML = '<p>Alamat deployer tidak tersedia dari data keamanan token ini.</p>'; return; }
   const head = '<p>Deployer: ' + addressLink(pair.chainId, creator) + '<br>Pegangan token ini: ' + (scored.facts.creatorPct === null || scored.facts.creatorPct === undefined ? 'Tidak tersedia' : scored.facts.creatorPct.toFixed(2) + '% supply') + '</p>';
+
+  try {
+    const backend = await fetch('/api/creator-history?chainId=' + encodeURIComponent(pair.chainId || '') + '&creator=' + encodeURIComponent(creator));
+    if (backend.ok) {
+      const data = await backend.json();
+      if (data && data.available) {
+        const balanceHtml = data.balanceText ? '<p>Saldo dompet deployer: ' + esc(data.balanceText) + '</p>' : '';
+        const creations = Array.isArray(data.creations) ? data.creations : [];
+        if (!creations.length) { box.innerHTML = head + balanceHtml + '<p>Tidak ada pembuatan token terdeteksi dari transaksi deployer ini.</p>' + (data.source ? '<p class="muted">Sumber: ' + esc(data.source) + '.</p>' : ''); return; }
+        const rows = creations.map((item) => '<tr><td>' + (item.symbol ? esc(item.symbol) : 'Token') + '</td><td>' + addressLink(pair.chainId, item.address) + '</td><td>' + (item.time ? new Date(item.time * 1000).toLocaleDateString('id-ID') : '-') + '</td></tr>').join('');
+        box.innerHTML = head + balanceHtml + '<p>Kontrak/token pernah dibuat: ' + (data.count || creations.length) + ' terdeteksi dari transaksi deployer ini.</p>' + ((data.count || creations.length) >= 5 ? '<p><b>Pola deployer berulang</b> — creator ini membuat banyak token, perlu ekstra hati-hati.</p>' : '') + '<table><tr><th>Token</th><th>Alamat</th><th>Tanggal</th></tr>' + rows + '</table>' + (data.source ? '<p class="muted">Sumber: ' + esc(data.source) + '.</p>' : '');
+        return;
+      }
+    }
+  } catch { /* fall back to browser reads */ }
   const balanceText = async () => {
     try {
       if (isEvm(creator)) {
