@@ -34,6 +34,8 @@ body::before, body::after {
 body::before { width: 46vw; height: 18rem; right: -8vw; top: 5rem; }
 body::after { width: 34vw; height: 24rem; right: 16vw; top: 24rem; opacity: .55; }
 a { color: inherit; text-decoration: none; }
+.address-link { color: var(--green); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; display: inline-block; padding: 2px 0; }
+.address-link:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 4px; }
 .topbar {
   height: 92px;
   display: flex;
