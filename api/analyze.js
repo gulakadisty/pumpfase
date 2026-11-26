@@ -1,4 +1,4 @@
-const { num, detectMode, isEvm, isSolana, fetchSecurity, fetchQuoter, scorePair } = require('./_core');
+const { num, detectMode, isEvm, isSolana, fetchSecurity, fetchQuoter, fetchEarlyAnalysis, scorePair } = require('./_core');
 
 module.exports = async function handler(req, res) {
   const address = String(req.query.address || '').trim();
@@ -16,7 +16,8 @@ module.exports = async function handler(req, res) {
     const pair = pairs.find((p) => p.pairAddress === pairAddress) || pairs[0];
     const security = await fetchSecurity(pair, address, mode);
     const quoter = await fetchQuoter(pair, address, mode);
-    const scored = scorePair(pair, pairs, security, quoter);
+    const early = await fetchEarlyAnalysis(pair, address, mode, security);
+    const scored = scorePair(pair, pairs, security, quoter, early);
     return res.status(200).json({ status: 'ok', pair, pairs, security, quoter, scored });
   } catch {
     return res.status(502).json({ error: 'Gagal mengambil data pair. Coba lagi sebentar.' });

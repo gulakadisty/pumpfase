@@ -50,7 +50,7 @@ function normalizeHolders(security) {
 }
 
 function securityFacts(security) {
-  if (!security) return { available: false, honeypot: false, cannotSellAll: false, creatorPct: null, creatorAddress: '', ownerAddress: '', top10Pct: null, top10NonContractPct: null, bundleSharePct: null, bundleWalletCount: 0, holderCount: null, mintable: null, proxy: null, openSource: null, buyTaxPct: null, sellTaxPct: null, mintAuthorityActive: null, freezeAuthorityActive: null, topHolders: [], notes: ['GoPlus data tidak tersedia untuk pair ini.'] };
+  if (!security) return { available: false, honeypot: false, cannotSellAll: false, creatorPct: null, creatorAddress: '', ownerAddress: '', top10Pct: null, top10NonContractPct: null, bundleSharePct: null, bundleWalletCount: 0, holderCount: null, mintable: null, proxy: null, openSource: null, buyTaxPct: null, sellTaxPct: null, mintAuthorityActive: null, freezeAuthorityActive: null, lpLockedPct: null, lpBurnedPct: null, topHolders: [], notes: ['GoPlus data tidak tersedia untuk pair ini.'] };
   const topHolders = normalizeHolders(security).slice(0, 10);
   const top10Pct = topHolders.length ? topHolders.reduce((sum, h) => sum + h.percent, 0) : null;
   const nonContract = topHolders.filter((h) => h.isContract !== true && h.isLocked !== true);
@@ -75,6 +75,20 @@ function securityFacts(security) {
   const mintAuthorityActive = mintAuthority === null ? mintable : String(mintAuthority).length > 0 && String(mintAuthority) !== 'null';
   const freezeAuthorityActive = freezeAuthority === null ? null : String(freezeAuthority).length > 0 && String(freezeAuthority) !== 'null';
   const holderCountRaw = num(firstValue(security, ['holder_count', 'holderCount', 'holders_count']), NaN);
+  const lpHoldersRaw = security?.lp_holders || security?.lpHolders;
+  let lpLockedPct = null; let lpBurnedPct = null;
+  if (Array.isArray(lpHoldersRaw) && lpHoldersRaw.length) {
+    let locked = 0; let burned = 0; let seen = false;
+    for (const h of lpHoldersRaw) {
+      const p = pctValue(firstValue(h, ['percent', 'percentage', 'balance_percent', 'share']));
+      if (!Number.isFinite(p)) continue;
+      seen = true;
+      const addr = String(firstValue(h, ['address', 'holder_address', 'wallet']) || '').toLowerCase();
+      if (boolValue(firstValue(h, ['is_locked', 'isLocked', 'locked'])) === true) locked += p;
+      if (/^0x0{40}$/.test(addr) || addr.endsWith('dead')) burned += p;
+    }
+    if (seen) { lpLockedPct = Math.round(locked * 10) / 10; lpBurnedPct = Math.round(burned * 10) / 10; }
+  }
   const notes = [];
   if (honeypot) notes.push('GoPlus menandai potensi honeypot.');
   if (cannotSellAll) notes.push('GoPlus menandai token tidak bisa dijual seluruhnya.');
@@ -83,10 +97,10 @@ function securityFacts(security) {
   if (bundleSharePct) notes.push(bundleSharePct < 20 ? 'Indikasi bundle ringan: ±' + bundleSharePct.toFixed(1) + '% supply di cluster wallet serupa (heuristik).' : 'Indikasi bundle: ±' + bundleSharePct.toFixed(1) + '% supply di wallet non-kontrak berukuran mirip (heuristik).');
   if (mintable) notes.push('Mint authority masih aktif menurut GoPlus.');
   if (!notes.length) notes.push('Tidak ada red flag besar dari data GoPlus yang tersedia.');
-  return { available: true, honeypot, cannotSellAll, creatorPct, creatorAddress: firstValue(security, ['creator_address', 'creatorAddress']) || '', ownerAddress: firstValue(security, ['owner_address', 'ownerAddress']) || '', top10Pct, top10NonContractPct, bundleSharePct, bundleWalletCount, holderCount: Number.isFinite(holderCountRaw) ? holderCountRaw : null, mintable, proxy, openSource, buyTaxPct, sellTaxPct, mintAuthorityActive, freezeAuthorityActive, topHolders, notes };
+  return { available: true, honeypot, cannotSellAll, creatorPct, creatorAddress: firstValue(security, ['creator_address', 'creatorAddress']) || '', ownerAddress: firstValue(security, ['owner_address', 'ownerAddress']) || '', top10Pct, top10NonContractPct, bundleSharePct, bundleWalletCount, holderCount: Number.isFinite(holderCountRaw) ? holderCountRaw : null, mintable, proxy, openSource, buyTaxPct, sellTaxPct, mintAuthorityActive, freezeAuthorityActive, lpLockedPct, lpBurnedPct, topHolders, notes };
 }
 
-function scorePair(pair, pairs, security, quoter) {
+function scorePair(pair, pairs, security, quoter, early) {
   const facts = securityFacts(security);
   const liquidity = num(pair.liquidity?.usd);
   const fdv = num(pair.fdv || pair.marketCap);
@@ -209,14 +223,24 @@ function scorePair(pair, pairs, security, quoter) {
   if (ownerText && !/^0x0{40}$/i.test(ownerText)) addRug(4, 'Owner kontrak belum renounced menurut data security.');
   if (pairAgeHours !== null && pairAgeHours < 1) addRug(12, 'Pair berumur di bawah 1 jam.');
   else if (pairAgeHours !== null && pairAgeHours < 24) addRug(7, 'Pair berumur di bawah 24 jam.');
+  if (early && early.available) {
+    if (early.creatorSoldEarly === true) addRug(15, 'Creator terdeteksi menjual di transaksi awal.');
+    if ((early.clusterSharePct || 0) > 20) addRug(12, 'Cluster beli awal terbesar di atas 20% supply.');
+    else if ((early.clusterSharePct || 0) > 10) addRug(6, 'Cluster beli awal terbesar di atas 10% supply.');
+    if ((early.earlyBuySharePct || 0) > 25) addRug(8, 'Pembeli jam pertama mengambil di atas 25% supply.');
+  }
+  const lpSafePct = (facts.lpLockedPct || 0) + (facts.lpBurnedPct || 0);
+  if (facts.lpLockedPct !== null && lpSafePct < 10) addRug(8, 'LP hampir tidak terkunci/terbakar menurut data LP holder.');
   if (executable && quoter && quoter.buy && quoter.sell) rugMitigations.push('Route beli dan jual ±$100 ditemukan.');
   if (liquidity >= 100000) rugMitigations.push('Likuiditas di atas $100.000.');
   if (facts.creatorPct !== null && facts.creatorPct <= 5) rugMitigations.push('Creator share rendah.');
   if ((facts.top10Pct || 100) <= 35) rugMitigations.push('Konsentrasi top 10 holder tidak ekstrem.');
   if (!facts.mintable && !facts.mintAuthorityActive && !facts.freezeAuthorityActive) rugMitigations.push('Mint/freeze authority tidak aktif menurut data security.');
   if (facts.openSource === true) rugMitigations.push('Kontrak open source menurut data security.');
+  if (early && early.available && early.creatorSoldEarly === false) rugMitigations.push('Creator tidak terdeteksi menjual di jendela transaksi awal.');
+  if (facts.lpLockedPct !== null && lpSafePct >= 50) rugMitigations.push('Sebagian besar LP terkunci/terbakar menurut data LP holder.');
   if (!rugFlags.length) rugFlags.push('Tidak ada red flag rugpull besar dari data yang tersedia.');
-  const rugpull = { level: rugPoints >= 70 ? 'Sangat tinggi' : rugPoints >= 45 ? 'Tinggi' : rugPoints >= 25 ? 'Sedang' : 'Rendah', points: Math.min(100, Math.round(rugPoints)), flags: rugFlags, mitigations: rugMitigations, notes: ['Level ini merangkum red flag rugpull dari data pasar, quoter, dan security yang tersedia.', 'LP lock/burn khusus dan creator sell dari transaksi awal belum dibaca sebagai bukti mutlak.'] };
+  const rugpull = { level: rugPoints >= 70 ? 'Sangat tinggi' : rugPoints >= 45 ? 'Tinggi' : rugPoints >= 25 ? 'Sedang' : 'Rendah', points: Math.min(100, Math.round(rugPoints)), flags: rugFlags, mitigations: rugMitigations, notes: ['Level ini merangkum red flag rugpull dari data pasar, quoter, security, dan transaksi awal yang tersedia.', 'Transaksi awal dibaca dari jendela 60 menit pertama pair; hasil kosong bisa berarti data on-chain lama tidak terjangkau RPC publik, bukan bukti bersih.'] };
   const chanceBins = [{ max: 35, up0: 50, up5: 35 }, { max: 45, up0: 50, up5: 27 }, { max: 55, up0: 42, up5: 13 }, { max: 65, up0: 43, up5: 23 }, { max: 75, up0: 40, up5: 27 }, { max: 101, up0: 42, up5: 35 }];
   const chanceBin = chanceBins.find((b) => momentumScore < b.max) || chanceBins[chanceBins.length - 1];
   let upPct = chanceBin.up0 + (score - 55) * 0.18 + (riskScore - 50) * 0.08;
@@ -229,7 +253,7 @@ function scorePair(pair, pairs, security, quoter) {
   const upSpread = confidence === 'Tinggi' ? 8 : confidence === 'Sedang' ? 12 : 18;
   const up5Spread = confidence === 'Tinggi' ? 6 : confidence === 'Sedang' ? 9 : 14;
   const chance = { horizon: '24 jam', upPct: Math.round(upPct), up5Pct: Math.round(up5Pct), range: [Math.max(1, Math.round(upPct - upSpread)), Math.min(95, Math.round(upPct + upSpread))], up5Range: [Math.max(1, Math.round(up5Pct - up5Spread)), Math.min(90, Math.round(up5Pct + up5Spread))], basis: 'Backtest momentum historis 12.681 sampel dari 62 pool; base rate naik 43,2% dan naik >5% 16,3%, lalu disesuaikan score, risiko, dan status eksekusi.', notes: ['Estimasi model, bukan probabilitas pasti atau janji harga naik.', 'Naik berarti harga 24 jam lagi lebih tinggi dari sekarang; naik >5% berarti return 24 jam di atas 5%.'] };
-  return { score, rawScore, cap, capReason, bias, confidence, executable, execution, caps, facts, factors, sniper, rugpull, chance, quoter, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
+  return { score, rawScore, cap, capReason, bias, confidence, executable, execution, caps, facts, factors, sniper, early: early || null, rugpull, chance, quoter, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
 }
 
 const EVM_QUOTER = {
@@ -303,6 +327,169 @@ async function fetchQuoter(pair, address, mode) {
   } catch { return null; }
 }
 const GT_NETWORKS = { ethereum: 'eth', solana: 'solana', bsc: 'bsc', base: 'base', arbitrum: 'arbitrum', polygon: 'polygon_pos', avalanche: 'avax', optimism: 'optimism' };
+const BLOCKSCOUT = { ethereum: 'https://eth.blockscout.com', bsc: 'https://bsc.blockscout.com', base: 'https://base.blockscout.com', arbitrum: 'https://arbitrum.blockscout.com', polygon: 'https://polygon.blockscout.com', optimism: 'https://optimism.blockscout.com' };
+const HOUR_BLOCKS = { ethereum: 300, bsc: 1200, base: 1800, arbitrum: 10000, polygon: 1800, avalanche: 3600, optimism: 1800 };
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+function padTopic(address) { return '0x' + String(address).toLowerCase().replace(/^0x/, '').padStart(64, '0'); }
+function topicAddress(topic) { return '0x' + String(topic || '').slice(-40).toLowerCase(); }
+async function rpcCall(rpc, method, params) {
+  const res = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message || 'rpc error');
+  return json.result;
+}
+const EARLY_RPCS = {
+  ethereum: ['https://ethereum-rpc.publicnode.com', 'https://cloudflare-eth.com', 'https://eth.llamarpc.com'],
+  bsc: ['https://bsc-rpc.publicnode.com', 'https://bsc-dataseed.binance.org'],
+  base: ['https://base-rpc.publicnode.com', 'https://mainnet.base.org'],
+  arbitrum: ['https://arbitrum-one-rpc.publicnode.com', 'https://arb1.arbitrum.io/rpc'],
+  polygon: ['https://polygon-bor-rpc.publicnode.com', 'https://polygon-rpc.com'],
+  avalanche: ['https://avalanche-c-chain-rpc.publicnode.com', 'https://api.avax.network/ext/bc/C/rpc'],
+  optimism: ['https://optimism-rpc.publicnode.com', 'https://mainnet.optimism.io']
+};
+async function rpcCallAny(rpcs, method, params) {
+  let lastError = null;
+  for (const rpc of rpcs) {
+    try { return await rpcCall(rpc, method, params); } catch (error) { lastError = error; }
+  }
+  throw lastError || new Error('rpc unavailable');
+}
+function sharePct(part, total) { if (!total || total <= 0n) return null; return Math.round(Number(part * 1000n / total)) / 10; }
+async function fetchEarlyEvm(pair, address, facts) {
+  const cfg = EVM_QUOTER[pair.chainId];
+  const scout = BLOCKSCOUT[pair.chainId];
+  if (!cfg || !scout || !pair.pairCreatedAt || !pair.pairAddress) return null;
+  const rpcs = EARLY_RPCS[pair.chainId] || [cfg.rpc];
+  const headers = { accept: 'application/json', 'user-agent': 'Pumpfase/1.0' };
+  const ts = Math.floor(pair.pairCreatedAt / 1000);
+  const blockRes = await fetch(scout + '/api?module=block&action=getblocknobytime&timestamp=' + ts + '&closest=after', { headers });
+  const blockJson = await blockRes.json();
+  const pairBlock = parseInt(blockJson.result?.blockNumber || blockJson.result, 10);
+  if (!Number.isFinite(pairBlock)) return null;
+  const endBlock = pairBlock + (HOUR_BLOCKS[pair.chainId] || 1800);
+  let supply = 0n;
+  try {
+    const tokenJson = await (await fetch(scout + '/api/v2/tokens/' + encodeURIComponent(address), { headers })).json();
+    if (tokenJson.total_supply) supply = BigInt(tokenJson.total_supply);
+  } catch { supply = 0n; }
+  if (!supply) {
+    const supplyHex = await rpcCallAny(rpcs, 'eth_call', [{ to: address, data: '0x18160ddd' }, 'latest']);
+    supply = BigInt(supplyHex);
+  }
+  const pairLower = String(pair.pairAddress).toLowerCase();
+  const creator = String(facts.creatorAddress || '');
+  const creatorLower = creator.toLowerCase();
+  const buyers = new Map();
+  const byBlock = new Map();
+  let totalBought = 0n;
+  let sampledTxs = 0;
+  let creatorSoldEarly = /^0x[a-fA-F0-9]{40}$/.test(creator) ? false : null;
+  let scoutOk = false;
+  for (let page = 1; page <= 5; page++) {
+    const url = scout + '/api?module=account&action=tokentx&contractaddress=' + encodeURIComponent(address) + '&address=' + encodeURIComponent(pair.pairAddress) + '&startblock=' + pairBlock + '&endblock=' + endBlock + '&sort=asc&page=' + page + '&offset=200';
+    let json = null;
+    try { json = await (await fetch(url, { headers })).json(); } catch { break; }
+    if (!Array.isArray(json.result)) break;
+    scoutOk = true;
+    sampledTxs += json.result.length;
+    for (const item of json.result) {
+      const from = String(item.from || '').toLowerCase();
+      const to = String(item.to || '').toLowerCase();
+      const value = BigInt(item.value || '0');
+      if (creatorSoldEarly === false && from === creatorLower && to === pairLower) creatorSoldEarly = true;
+      if (from === pairLower && to && to !== pairLower && !/^0x0{40}$/.test(to)) {
+        buyers.set(to, (buyers.get(to) || 0n) + value);
+        byBlock.set(String(item.blockNumber || ''), (byBlock.get(String(item.blockNumber || '')) || 0n) + value);
+        totalBought += value;
+      }
+    }
+    if (json.result.length < 200) break;
+  }
+  if (!scoutOk) {
+    const fromBlock = '0x' + pairBlock.toString(16);
+    const toBlock = '0x' + endBlock.toString(16);
+    const buyLogs = await rpcCallAny(rpcs, 'eth_getLogs', [{ address, fromBlock, toBlock, topics: [TRANSFER_TOPIC, padTopic(pair.pairAddress)] }]);
+    if (!Array.isArray(buyLogs)) return null;
+    sampledTxs = buyLogs.length;
+    for (const log of buyLogs) {
+      const to = topicAddress(log.topics?.[2]);
+      if (!to || to === pairLower || /^0x0{40}$/.test(to)) continue;
+      const value = BigInt(log.data || '0x0');
+      buyers.set(to, (buyers.get(to) || 0n) + value);
+      byBlock.set(log.blockNumber, (byBlock.get(log.blockNumber) || 0n) + value);
+      totalBought += value;
+    }
+    if (creatorSoldEarly === false) {
+      try {
+        const sellLogs = await rpcCallAny(rpcs, 'eth_getLogs', [{ address, fromBlock, toBlock, topics: [TRANSFER_TOPIC, padTopic(creator), padTopic(pair.pairAddress)] }]);
+        creatorSoldEarly = Array.isArray(sellLogs) && sellLogs.length > 0;
+      } catch { creatorSoldEarly = null; }
+    }
+  }
+  let cluster = 0n;
+  for (const v of byBlock.values()) if (v > cluster) cluster = v;
+  return { available: true, source: 'Blockscout + RPC publik', windowMinutes: 60, earlyBuyers: buyers.size, earlyBuySharePct: sharePct(totalBought, supply), clusterSharePct: sharePct(cluster, supply), creatorSoldEarly, sampledTxs, notes: ['Pembeli awal dihitung dari transfer keluar pair pada 60 menit pertama setelah pair dibuat.', 'Cluster adalah share supply terbesar yang dibeli dalam satu blok yang sama pada jendela itu.'] };
+}
+async function fetchEarlySolana(pair, address, facts) {
+  if (!pair.pairCreatedAt || !pair.pairAddress) return null;
+  const rpc = 'https://api.mainnet-beta.solana.com';
+  const start = Math.floor(pair.pairCreatedAt / 1000);
+  const end = start + 3600;
+  let sigs = [];
+  let before;
+  for (let page = 0; page < 8; page++) {
+    const batch = await rpcCall(rpc, 'getSignaturesForAddress', [pair.pairAddress, before ? { limit: 1000, before } : { limit: 1000 }]);
+    if (!Array.isArray(batch) || !batch.length) break;
+    sigs = sigs.concat(batch);
+    const oldest = batch[batch.length - 1];
+    if (!oldest.blockTime || oldest.blockTime <= start) break;
+    before = oldest.signature;
+  }
+  const inWindow = sigs.filter((s) => s.blockTime && s.blockTime >= start && s.blockTime <= end && !s.err).sort((a, b) => a.blockTime - b.blockTime).slice(0, 12);
+  if (!inWindow.length) return null;
+  const supplyRes = await rpcCall(rpc, 'getTokenSupply', [address]);
+  const supplyUi = num(supplyRes?.value?.uiAmount, 0);
+  const txDeltas = [];
+  const preTotals = new Map();
+  for (const sig of inWindow) {
+    let tx = null;
+    try { tx = await rpcCall(rpc, 'getTransaction', [sig.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]); } catch { continue; }
+    if (!tx?.meta) continue;
+    const pre = new Map();
+    const post = new Map();
+    for (const b of tx.meta.preTokenBalances || []) if (b.mint === address && b.owner) { const v = num(b.uiTokenAmount?.uiAmount, 0); pre.set(b.owner, v); preTotals.set(b.owner, (preTotals.get(b.owner) || 0) + v); }
+    for (const b of tx.meta.postTokenBalances || []) if (b.mint === address && b.owner) post.set(b.owner, num(b.uiTokenAmount?.uiAmount, 0));
+    const deltas = new Map();
+    for (const owner of new Set([...pre.keys(), ...post.keys()])) deltas.set(owner, (post.get(owner) || 0) - (pre.get(owner) || 0));
+    txDeltas.push({ slot: sig.slot, deltas });
+  }
+  if (!txDeltas.length) return null;
+  let poolOwner = '';
+  let poolPre = -1;
+  for (const [owner, total] of preTotals) if (owner !== facts.creatorAddress && total > poolPre) { poolPre = total; poolOwner = owner; }
+  const buyers = new Map();
+  const bySlot = new Map();
+  let creatorSoldEarly = facts.creatorAddress ? false : null;
+  for (const item of txDeltas) {
+    for (const [owner, delta] of item.deltas) {
+      if (facts.creatorAddress && owner === facts.creatorAddress && delta < 0) creatorSoldEarly = true;
+      if (delta > 0 && owner !== pair.pairAddress && owner !== poolOwner) { buyers.set(owner, (buyers.get(owner) || 0) + delta); bySlot.set(item.slot, (bySlot.get(item.slot) || 0) + delta); }
+    }
+  }
+  let totalBought = 0; let cluster = 0;
+  for (const v of buyers.values()) totalBought += v;
+  for (const v of bySlot.values()) if (v > cluster) cluster = v;
+  const pctOf = (v) => supplyUi > 0 ? Math.round(v / supplyUi * 1000) / 10 : null;
+  return { available: true, source: 'Solana RPC publik', windowMinutes: 60, earlyBuyers: buyers.size, earlyBuySharePct: pctOf(totalBought), clusterSharePct: pctOf(cluster), creatorSoldEarly, sampledTxs: txDeltas.length, notes: ['Pembeli awal diambil dari transaksi pair pada 60 menit pertama (maksimal 12 transaksi pertama yang terjangkau RPC publik).', 'Cluster adalah share supply terbesar yang dibeli dalam satu slot yang sama pada sampel itu.'] };
+}
+async function fetchEarlyAnalysis(pair, address, mode, security) {
+  try {
+    const facts = securityFacts(security);
+    const early = mode === 'sol' ? await fetchEarlySolana(pair, address, facts) : await fetchEarlyEvm(pair, address, facts);
+    if (early) return early;
+  } catch { /* fall through to unavailable */ }
+  return { available: false, source: '', windowMinutes: 60, earlyBuyers: null, earlyBuySharePct: null, clusterSharePct: null, creatorSoldEarly: null, sampledTxs: 0, notes: ['Data transaksi awal tidak terjangkau dari RPC publik untuk pair ini.'] };
+}
 async function fetchOhlcv(network, poolAddress, cfg) {
   const res = await fetch('https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + encodeURIComponent(poolAddress) + '/ohlcv/' + cfg[0] + '?aggregate=' + cfg[1] + '&limit=' + cfg[2]);
   const json = await res.json();
@@ -328,4 +515,4 @@ async function fetchChart(pair, range) {
     return [];
   } catch { return []; }
 }
-module.exports = { num, detectMode, isEvm, isSolana, fetchSecurity, fetchQuoter, scorePair, fetchChart };
+module.exports = { num, detectMode, isEvm, isSolana, fetchSecurity, fetchQuoter, fetchEarlyAnalysis, scorePair, fetchChart };
