@@ -188,7 +188,7 @@ function scorePair(pair, pairs, security, quoter, early) {
   if (cap !== null) score = Math.min(score, cap);
   score = Math.round(clamp(score));
   const executable = liquidity >= 1000 && !facts.honeypot && !facts.cannotSellAll && !(quoter && quoter.supported && (!quoter.buy || !quoter.sell));
-  const execution = quoter && quoter.supported && quoter.buy && quoter.sell && quoterMaxImpact > 25 ? { status: 'Likuiditas sangat tipis', detail: 'Route swap nyata ditemukan via quoter ' + quoter.source + ', tapi price impact ±$100 di atas 25% — swap kecil pun menggerakkan harga secara ekstrem.' } : quoter && quoter.supported && quoter.buy && quoter.sell ? { status: 'Bisa dieksekusi', detail: 'Route swap nyata ditemukan via quoter ' + quoter.source + ' untuk beli & jual (±$100) — terverifikasi bisa dieksekusi, bukan cuma dari likuiditas pair.' } : { status: executable ? 'Bisa dieksekusi' : 'Tidak bisa dieksekusi', detail: executable ? 'Pair aktif dengan likuiditas yang cukup untuk dieksekusi pada ukuran ritel.' : 'Pair tidak punya likuiditas aktif yang cukup atau terdeteksi risiko jual, jadi swap tidak dianggap aman dieksekusi.' };
+  const execution = quoter && quoter.supported && quoter.buy && quoter.sell && quoterMaxImpact > 25 ? { status: 'Pasar Sangat Tipis — Hati-hati', detail: 'Route swap nyata ditemukan via quoter ' + quoter.source + ', tapi price impact ±$100 di atas 25% — swap kecil pun menggerakkan harga secara ekstrem.' } : quoter && quoter.supported && quoter.buy && quoter.sell ? { status: 'Bisa Diperjualbelikan', detail: 'Route swap nyata ditemukan via quoter ' + quoter.source + ' untuk beli & jual (±$100) — terverifikasi bisa dieksekusi, bukan cuma dari likuiditas pair.' } : { status: executable ? 'Bisa Diperjualbelikan' : 'Tidak Bisa Diperjualbelikan', detail: executable ? 'Pair aktif dengan likuiditas yang cukup untuk dieksekusi pada ukuran ritel.' : 'Pair tidak punya likuiditas aktif yang cukup atau terdeteksi risiko jual, jadi swap tidak dianggap aman dieksekusi.' };
   const bias = score >= 70 ? 'Naik' : score >= 45 ? 'Netral' : 'Turun';
   const confidence = !executable ? 'Rendah' : (facts.available && volume24 > 10000 ? 'Tinggi' : volume24 > 1000 ? 'Sedang' : 'Rendah');
   const sniperWalletsAll = facts.topHolders.filter((h) => !h.isContract && !h.isLocked && h.percent >= 0.5 && (!facts.creatorAddress || String(h.address).toLowerCase() !== String(facts.creatorAddress).toLowerCase()));
@@ -273,6 +273,12 @@ function factorCard(factor) {
   return '<article class="factor-card"><div class="factor-head"><b>' + esc(factor.label) + '</b><span>' + factor.score + '/100 · bobot ' + factor.weight + '% · ' + factor.points + ' poin</span></div>' + bar(factor.label, factor.score) + '<ul>' + factor.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul></article>';
 }
 function yesNo(value) { return value === true ? 'Ya' : value === false ? 'Tidak' : 'Tidak tersedia'; }
+function conclusionText(scored, rug) {
+  const base = scored.bias === 'Naik' ? 'Kesimpulan: sinyalnya cenderung naik' : scored.bias === 'Turun' ? 'Kesimpulan: token ini berisiko — sinyalnya cenderung turun' : 'Kesimpulan: sinyalnya campuran — belum ada arah yang jelas';
+  const exec = scored.execution.status === 'Pasar Sangat Tipis — Hati-hati' ? ' dan pasarnya sangat tipis, jadi harga mudah bergerak ekstrem.' : scored.execution.status === 'Tidak Bisa Diperjualbelikan' ? ' dan token ini tidak bisa diperjualbelikan dengan aman.' : ' dan token ini bisa diperjualbelikan.';
+  const rugText = rug.level === 'Tinggi' || rug.level === 'Sangat tinggi' ? ' Risiko rugpull juga tinggi.' : '';
+  return base + exec + rugText;
+}
 
 function render(pair, scored) {
   const token = pair.baseToken || {};
@@ -282,8 +288,8 @@ function render(pair, scored) {
   const strongest = sortedFactors[0];
   const weakest = sortedFactors[sortedFactors.length - 1];
   const reasonsHtml = '<div class="score-reasons"><b>Alasan Score</b><ul>' +
-    '<li>Kekuatan utama: ' + esc(strongest.label) + ' (' + strongest.score + '/100) — ' + esc(strongest.notes[0] || '') + '</li>' +
-    '<li>Penahan utama: ' + esc(weakest.label) + ' (' + weakest.score + '/100) — ' + esc(weakest.notes[0] || '') + '</li>' +
+    '<li>Yang mendukung: ' + esc(strongest.label) + ' (' + strongest.score + '/100) — ' + esc(strongest.notes[0] || '') + '</li>' +
+    '<li>Yang menahan: ' + esc(weakest.label) + ' (' + weakest.score + '/100) — ' + esc(weakest.notes[0] || '') + '</li>' +
     (scored.capReason ? '<li>Score dibatasi ke ' + scored.cap + ' dari raw ' + scored.rawScore + ': ' + esc(scored.capReason) + '</li>' : '') +
     '<li>' + esc(scored.execution.status) + ' — ' + esc(scored.execution.detail) + '</li></ul></div>';
   const capHtml = '';
@@ -301,8 +307,9 @@ function render(pair, scored) {
   $('result').innerHTML = '<div class="dashboard">' +
     '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + (quoteSymbol ? ' · ' + esc(quoteSymbol) : '') + ' · Pair age ' + ageText(pair) + '</p><p><a href="' + esc(pair.url || '#') + '" target="_blank" rel="noreferrer">Lihat pair di DexScreener</a> · Pair ' + addressLink(pair.chainId, pair.pairAddress) + '</p></div></div>' +
     '<label>Pair <select id="pairSelect">' + pairOptions + '</select></label></div>' +
-    '<div class="score-grid"><div><div class="score-ring" style="--score:' + scored.score + ';--ring:' + ringColor(scored.score) + '"><div><span><b>' + scored.score + '</b><br>Score</span></div></div></div><div>' +
-    '<div class="badges"><span class="badge ' + (scored.bias === 'Naik' ? 'good' : scored.bias === 'Turun' ? 'bad' : 'warn') + '">Bias ' + scored.bias + '</span><span class="badge">Confidence ' + scored.confidence + '</span><span class="badge ' + (scored.executable ? 'good' : 'bad') + '">' + scored.execution.status + '</span></div>' +
+    '<div class="score-grid"><div><div class="score-ring" style="--score:' + scored.score + ';--ring:' + ringColor(scored.score) + '"><div><span><b>' + scored.score + '</b><br>Score' + (scored.score < 45 ? '<br><span class="ring-risk">Berisiko</span>' : '') + '</span></div></div></div><div>' +
+    '<div class="badges"><span class="badge ' + (scored.bias === 'Naik' ? 'good' : scored.bias === 'Turun' ? 'bad' : 'warn') + '">Sinyal: ' + (scored.bias === 'Naik' ? 'Cenderung Naik' : scored.bias === 'Turun' ? 'Cenderung Turun' : 'Campuran') + '</span><span class="badge">Data: ' + (scored.confidence === 'Tinggi' ? 'Cukup Lengkap' : scored.confidence === 'Sedang' ? 'Sebagian' : 'Terbatas') + '</span><span class="badge ' + (scored.execution.status === 'Bisa Diperjualbelikan' ? 'good' : scored.execution.status === 'Pasar Sangat Tipis — Hati-hati' ? 'warn' : 'bad') + '">' + scored.execution.status + '</span></div>' +
+    '<p class="conclusion">' + esc(conclusionText(scored, rug)) + '</p>' +
     reasonsHtml + '<div class="score-indicators">' + bar('Rugpull Risk', rug.points, 'rug') + (chance ? bar('Estimasi naik 24 jam', chance.upPct, 'chance') : '') + '</div></div></div>' +
     '<div class="factor-grid">' + scored.factors.map(factorCard).join('') + '</div>' +
     '<div class="metrics">' +
@@ -616,14 +623,14 @@ async function analyze() {
     try {
       const data = await backendAnalyze(address, mode);
       currentAddress = address; currentMode = mode;
-      if (data.status === 'not_found') { $('result').innerHTML = '<div class="dashboard"><h2>Tidak bisa dieksekusi</h2><p>Tidak ditemukan pair aktif — tidak ada jalur swap yang bisa dipakai.</p><p>Tidak ada pair yang terdaftar untuk alamat ini di DexScreener. Token mungkin belum punya pasar, sudah delisted, atau alamatnya salah. Tanpa pair, tidak ada harga yang bisa dieksekusi — score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+      if (data.status === 'not_found') { $('result').innerHTML = '<div class="dashboard"><h2>Tidak Bisa Diperjualbelikan</h2><p>Tidak ditemukan pair aktif — tidak ada jalur swap yang bisa dipakai.</p><p>Tidak ada pair yang terdaftar untuk alamat ini di DexScreener. Token mungkin belum punya pasar, sudah delisted, atau alamatnya salah. Tanpa pair, tidak ada harga yang bisa dieksekusi — score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
       if (data.status === 'ok') { currentPairs = data.pairs; currentSecurity = data.security; if (!data.scored.facts.available) { const browserSecurity = await fetchSecurity(data.pair, currentAddress, currentMode); if (browserSecurity) { currentSecurity = browserSecurity; const browserEarly = data.scored.early?.available ? data.scored.early : await fetchEarlyAnalysis(data.pair, currentAddress, currentMode, browserSecurity); render(data.pair, scorePair(data.pair, data.pairs, browserSecurity, data.scored.quoter, browserEarly)); return; } } render(data.pair, data.scored); return; }
     } catch { /* fallback to direct browser fetch */ }
     const res = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + encodeURIComponent(address));
     const json = await res.json();
     currentPairs = (json.pairs || []).filter((p) => mode === 'sol' ? p.chainId === 'solana' : p.chainId !== 'solana').sort((a, b) => num(b.liquidity?.usd) - num(a.liquidity?.usd));
     currentAddress = address; currentMode = mode;
-    if (!currentPairs.length) { $('result').innerHTML = '<div class="dashboard"><h2>Tidak bisa dieksekusi</h2><p>Tidak ditemukan pair aktif — tidak ada jalur swap yang bisa dipakai.</p><p>Tidak ada pair yang terdaftar untuk alamat ini di DexScreener. Token mungkin belum punya pasar, sudah delisted, atau alamatnya salah. Tanpa pair, tidak ada harga yang bisa dieksekusi — score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    if (!currentPairs.length) { $('result').innerHTML = '<div class="dashboard"><h2>Tidak Bisa Diperjualbelikan</h2><p>Tidak ditemukan pair aktif — tidak ada jalur swap yang bisa dipakai.</p><p>Tidak ada pair yang terdaftar untuk alamat ini di DexScreener. Token mungkin belum punya pasar, sudah delisted, atau alamatnya salah. Tanpa pair, tidak ada harga yang bisa dieksekusi — score tidak diterbitkan.</p></div>'; $('result').classList.remove('hidden'); $('result').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     const pair = currentPairs[0];
     currentSecurity = await fetchSecurity(pair, address, mode);
     const quoter = await fetchQuoter(pair, address, mode);
