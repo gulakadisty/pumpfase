@@ -348,23 +348,42 @@ async function loadCreatorHistory(pair, scored) {
   const creator = scored.facts.creatorAddress;
   const valid = creator && (isEvm(creator) || isSolana(creator));
   if (!valid) { box.innerHTML = '<p>Alamat deployer tidak tersedia dari data keamanan token ini.</p>'; return; }
-  const head = '<p>Deployer: ' + addressLink(pair.chainId, creator) + '</p>';
+  const head = '<p>Deployer: ' + addressLink(pair.chainId, creator) + '<br>Pegangan token ini: ' + (scored.facts.creatorPct === null || scored.facts.creatorPct === undefined ? 'Tidak tersedia' : scored.facts.creatorPct.toFixed(2) + '% supply') + '</p>';
+  const balanceText = async () => {
+    try {
+      if (isEvm(creator)) {
+        const rpcs = { ethereum: 'https://ethereum-rpc.publicnode.com', bsc: 'https://bsc-rpc.publicnode.com', base: 'https://base-rpc.publicnode.com', arbitrum: 'https://arbitrum-one-rpc.publicnode.com', polygon: 'https://polygon-bor-rpc.publicnode.com', avalanche: 'https://avalanche-c-chain-rpc.publicnode.com', optimism: 'https://optimism-rpc.publicnode.com' };
+        const symbols = { ethereum: 'ETH', bsc: 'BNB', base: 'ETH', arbitrum: 'ETH', polygon: 'POL', avalanche: 'AVAX', optimism: 'ETH' };
+        const rpc = rpcs[pair.chainId];
+        if (!rpc) return null;
+        const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [creator, 'latest'] }) });
+        const j = await r.json();
+        const wei = BigInt(j.result || '0x0');
+        return (Number(wei) / 1e18).toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' ' + (symbols[pair.chainId] || '');
+      }
+      const r = await fetch('https://api.mainnet-beta.solana.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [creator] }) });
+      const j = await r.json();
+      return ((j.result?.value || 0) / 1e9).toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' SOL';
+    } catch { return null; }
+  };
+  const balance = await balanceText();
+  const headWithBalance = head + (balance ? '<p>Saldo dompet deployer: ' + balance + '</p>' : '');
   try {
     if (isEvm(creator)) {
       const scout = BLOCKSCOUT[pair.chainId];
-      if (!scout) { box.innerHTML = head + '<p class="muted">Riwayat deploy belum didukung untuk chain ini.</p>'; return; }
+      if (!scout) { box.innerHTML = headWithBalance + '<p class="muted">Riwayat deploy belum didukung untuk chain ini.</p>'; return; }
       const fetchTxs = async (sort) => { const r = await fetch(scout + '/api?module=account&action=txlist&address=' + creator + '&sort=' + sort + '&page=1&offset=100'); const j = await r.json(); return Array.isArray(j.result) ? j.result : []; };
       const [ascTxs, descTxs] = await Promise.all([fetchTxs('asc'), fetchTxs('desc')]);
       const seen = new Map();
       for (const tx of [...ascTxs, ...descTxs]) if (tx.contractAddress && String(tx.contractAddress).length >= 10) seen.set(tx.contractAddress.toLowerCase(), tx);
       const creations = [...seen.values()].sort((a, b) => Number(b.timeStamp) - Number(a.timeStamp));
-      if (!creations.length) { box.innerHTML = head + '<p>Tidak ada pembuatan kontrak terdeteksi dari transaksi awal & terbaru deployer ini.</p>'; return; }
+      if (!creations.length) { box.innerHTML = headWithBalance + '<p>Tidak ada pembuatan kontrak terdeteksi dari transaksi awal & terbaru deployer ini.</p>'; return; }
       const latest = creations.slice(0, 5);
       const infos = await Promise.all(latest.map(async (tx) => {
         try { const r = await fetch(scout + '/api/v2/tokens/' + tx.contractAddress); const j = await r.json(); return j && j.symbol ? j.symbol : null; } catch { return null; }
       }));
       const rows = latest.map((tx, i) => '<tr><td>' + (infos[i] ? esc(infos[i]) : 'Kontrak') + '</td><td>' + addressLink(pair.chainId, tx.contractAddress) + '</td><td>' + new Date(Number(tx.timeStamp) * 1000).toLocaleDateString('id-ID') + '</td></tr>').join('');
-      box.innerHTML = head + '<p>Kontrak/token pernah dibuat: ' + creations.length + ' terdeteksi dari transaksi awal & terbaru deployer ini.</p>' + (creations.length >= 5 ? '<p><b>Pola deployer berulang</b> — creator ini membuat banyak token, perlu ekstra hati-hati.</p>' : '') + '<table><tr><th>Token</th><th>Alamat</th><th>Tanggal</th></tr>' + rows + '</table><p class="muted">Sumber: Blockscout. Daftar dari transaksi pembuatan kontrak deployer ini.</p>';
+      box.innerHTML = headWithBalance + '<p>Kontrak/token pernah dibuat: ' + creations.length + ' terdeteksi dari transaksi awal & terbaru deployer ini.</p>' + (creations.length >= 5 ? '<p><b>Pola deployer berulang</b> — creator ini membuat banyak token, perlu ekstra hati-hati.</p>' : '') + '<table><tr><th>Token</th><th>Alamat</th><th>Tanggal</th></tr>' + rows + '</table><p class="muted">Sumber: Blockscout. Daftar dari transaksi pembuatan kontrak deployer ini.</p>';
       return;
     }
     const rpc = 'https://api.mainnet-beta.solana.com';
@@ -384,10 +403,10 @@ async function loadCreatorHistory(pair, scored) {
       } catch { /* skip one tx */ }
     }
     const unique = [...new Map(mints.map((m) => [m.mint, m])).values()].slice(0, 5);
-    if (!unique.length) { box.innerHTML = head + '<p>Tidak ada pembuatan token terdeteksi dari transaksi terbaru deployer ini.</p><p class="muted">Sumber: RPC publik Solana — deteksi dari transaksi pembuatan token, bisa tidak lengkap.</p>'; return; }
+    if (!unique.length) { box.innerHTML = headWithBalance + '<p>Tidak ada pembuatan token terdeteksi dari transaksi terbaru deployer ini.</p><p class="muted">Sumber: RPC publik Solana — deteksi dari transaksi pembuatan token, bisa tidak lengkap.</p>'; return; }
     const rows = unique.map((m) => '<tr><td>' + addressLink('solana', m.mint) + '</td><td>' + (m.time ? new Date(m.time * 1000).toLocaleDateString('id-ID') : '-') + '</td></tr>').join('');
-    box.innerHTML = head + '<p>Token pernah dibuat: ' + unique.length + ' terdeteksi dari transaksi terbaru.</p>' + (unique.length >= 5 ? '<p><b>Pola deployer berulang</b> — creator ini membuat banyak token, perlu ekstra hati-hati.</p>' : '') + '<table><tr><th>Alamat token</th><th>Tanggal</th></tr>' + rows + '</table><p class="muted">Sumber: RPC publik Solana — deteksi dari transaksi pembuatan token, bisa tidak lengkap.</p>';
-  } catch { box.innerHTML = head + '<p class="muted">Riwayat creator tidak terjangkau saat ini.</p>'; }
+    box.innerHTML = headWithBalance + '<p>Token pernah dibuat: ' + unique.length + ' terdeteksi dari transaksi terbaru.</p>' + (unique.length >= 5 ? '<p><b>Pola deployer berulang</b> — creator ini membuat banyak token, perlu ekstra hati-hati.</p>' : '') + '<table><tr><th>Alamat token</th><th>Tanggal</th></tr>' + rows + '</table><p class="muted">Sumber: RPC publik Solana — deteksi dari transaksi pembuatan token, bisa tidak lengkap.</p>';
+  } catch { box.innerHTML = headWithBalance + '<p class="muted">Riwayat creator tidak terjangkau saat ini.</p>'; }
 }
 
 const EVM_QUOTER = {
