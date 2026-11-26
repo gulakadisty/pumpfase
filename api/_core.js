@@ -355,6 +355,28 @@ async function rpcCallAny(rpcs, method, params) {
   }
   throw lastError || new Error('rpc unavailable');
 }
+
+const ETHERSCAN_CHAIN_IDS = { ethereum: 1, bsc: 56, base: 8453, arbitrum: 42161, polygon: 137, avalanche: 43114, optimism: 10 };
+function solanaRpcUrl() {
+  const key = process.env.HELIUS_API_KEY;
+  return key ? 'https://mainnet.helius-rpc.com/?api-key=' + encodeURIComponent(key) : 'https://api.mainnet-beta.solana.com';
+}
+function solanaSourceLabel() { return process.env.HELIUS_API_KEY ? 'Helius RPC' : 'Solana RPC publik'; }
+async function explorerGet(chainId, params, headers) {
+  const key = process.env.ETHERSCAN_API_KEY;
+  const etherscanChainId = ETHERSCAN_CHAIN_IDS[chainId];
+  if (key && etherscanChainId) {
+    const qs = new URLSearchParams({ chainid: String(etherscanChainId), ...params, apikey: key });
+    const res = await fetch('https://api.etherscan.io/v2/api?' + qs.toString(), { headers });
+    const json = await res.json();
+    if (json && (Array.isArray(json.result) || typeof json.result === 'string' || typeof json.result === 'number')) return { json, source: 'Etherscan' };
+  }
+  const scout = BLOCKSCOUT[chainId];
+  if (!scout) return { json: null, source: '' };
+  const qs = new URLSearchParams(params);
+  const res = await fetch(scout + '/api?' + qs.toString(), { headers });
+  return { json: await res.json(), source: 'Blockscout' };
+}
 function sharePct(part, total) { if (!total || total <= 0n) return null; return Math.round(Number(part * 1000n / total)) / 10; }
 async function fetchEarlyEvm(pair, address, facts) {
   const cfg = EVM_QUOTER[pair.chainId];
@@ -363,8 +385,8 @@ async function fetchEarlyEvm(pair, address, facts) {
   const rpcs = EARLY_RPCS[pair.chainId] || [cfg.rpc];
   const headers = { accept: 'application/json', 'user-agent': 'Pumpfase/1.0' };
   const ts = Math.floor(pair.pairCreatedAt / 1000);
-  const blockRes = await fetch(scout + '/api?module=block&action=getblocknobytime&timestamp=' + ts + '&closest=after', { headers });
-  const blockJson = await blockRes.json();
+  const blockOut = await explorerGet(pair.chainId, { module: 'block', action: 'getblocknobytime', timestamp: String(ts), closest: 'after' }, headers);
+  const blockJson = blockOut.json || {};
   const pairBlock = parseInt(blockJson.result?.blockNumber || blockJson.result, 10);
   if (!Number.isFinite(pairBlock)) return null;
   const endBlock = pairBlock + (HOUR_BLOCKS[pair.chainId] || 1800);
@@ -387,9 +409,8 @@ async function fetchEarlyEvm(pair, address, facts) {
   let creatorSoldEarly = /^0x[a-fA-F0-9]{40}$/.test(creator) ? false : null;
   let scoutOk = false;
   for (let page = 1; page <= 5; page++) {
-    const url = scout + '/api?module=account&action=tokentx&contractaddress=' + encodeURIComponent(address) + '&address=' + encodeURIComponent(pair.pairAddress) + '&startblock=' + pairBlock + '&endblock=' + endBlock + '&sort=asc&page=' + page + '&offset=200';
     let json = null;
-    try { json = await (await fetch(url, { headers })).json(); } catch { break; }
+    try { json = (await explorerGet(pair.chainId, { module: 'account', action: 'tokentx', contractaddress: address, address: pair.pairAddress, startblock: String(pairBlock), endblock: String(endBlock), sort: 'asc', page: String(page), offset: '200' }, headers)).json; } catch { break; }
     if (!Array.isArray(json.result)) break;
     scoutOk = true;
     sampledTxs += json.result.length;
@@ -429,11 +450,11 @@ async function fetchEarlyEvm(pair, address, facts) {
   }
   let cluster = 0n;
   for (const v of byBlock.values()) if (v > cluster) cluster = v;
-  return { available: true, source: 'Blockscout + RPC publik', windowMinutes: 60, earlyBuyers: buyers.size, earlyBuySharePct: sharePct(totalBought, supply), clusterSharePct: sharePct(cluster, supply), creatorSoldEarly, sampledTxs, notes: ['Pembeli awal dihitung dari transfer keluar pair pada 60 menit pertama setelah pair dibuat.', 'Cluster adalah share supply terbesar yang dibeli dalam satu blok yang sama pada jendela itu.'] };
+  return { available: true, source: (process.env.ETHERSCAN_API_KEY ? 'Etherscan' : 'Blockscout') + ' + RPC publik', windowMinutes: 60, earlyBuyers: buyers.size, earlyBuySharePct: sharePct(totalBought, supply), clusterSharePct: sharePct(cluster, supply), creatorSoldEarly, sampledTxs, notes: ['Pembeli awal dihitung dari transfer keluar pair pada 60 menit pertama setelah pair dibuat.', 'Cluster adalah share supply terbesar yang dibeli dalam satu blok yang sama pada jendela itu.'] };
 }
 async function fetchEarlySolana(pair, address, facts) {
   if (!pair.pairCreatedAt || !pair.pairAddress) return null;
-  const rpc = 'https://api.mainnet-beta.solana.com';
+  const rpc = solanaRpcUrl();
   const start = Math.floor(pair.pairCreatedAt / 1000);
   const end = start + 3600;
   let sigs = [];
@@ -481,7 +502,7 @@ async function fetchEarlySolana(pair, address, facts) {
   for (const v of buyers.values()) totalBought += v;
   for (const v of bySlot.values()) if (v > cluster) cluster = v;
   const pctOf = (v) => supplyUi > 0 ? Math.round(v / supplyUi * 1000) / 10 : null;
-  return { available: true, source: 'Solana RPC publik', windowMinutes: 60, earlyBuyers: buyers.size, earlyBuySharePct: pctOf(totalBought), clusterSharePct: pctOf(cluster), creatorSoldEarly, sampledTxs: txDeltas.length, notes: ['Pembeli awal diambil dari transaksi pair pada 60 menit pertama (maksimal 12 transaksi pertama yang terjangkau RPC publik).', 'Cluster adalah share supply terbesar yang dibeli dalam satu slot yang sama pada sampel itu.'] };
+  return { available: true, source: solanaSourceLabel(), windowMinutes: 60, earlyBuyers: buyers.size, earlyBuySharePct: pctOf(totalBought), clusterSharePct: pctOf(cluster), creatorSoldEarly, sampledTxs: txDeltas.length, notes: ['Pembeli awal diambil dari transaksi pair pada 60 menit pertama (maksimal 12 transaksi pertama yang terjangkau RPC).', 'Cluster adalah share supply terbesar yang dibeli dalam satu slot yang sama pada sampel itu.'] };
 }
 async function fetchEarlyAnalysis(pair, address, mode, security) {
   try {
@@ -490,6 +511,59 @@ async function fetchEarlyAnalysis(pair, address, mode, security) {
     if (early) return early;
   } catch { /* fall through to unavailable */ }
   return { available: false, source: '', windowMinutes: 60, earlyBuyers: null, earlyBuySharePct: null, clusterSharePct: null, creatorSoldEarly: null, sampledTxs: 0, notes: ['Data transaksi awal tidak terjangkau dari RPC publik untuk pair ini.'] };
+}
+
+async function fetchCreatorHistory(pair, facts) {
+  const creator = String(facts?.creatorAddress || '');
+  const valid = creator && (isEvm(creator) || isSolana(creator));
+  if (!valid) return { available: false, balanceText: null, creations: [], source: '' };
+  const headers = { accept: 'application/json', 'user-agent': 'Pumpfase/1.0' };
+  let balanceText = null;
+  try {
+    if (isEvm(creator)) {
+      const rpcs = EARLY_RPCS[pair.chainId] || [];
+      const symbols = { ethereum: 'ETH', bsc: 'BNB', base: 'ETH', arbitrum: 'ETH', polygon: 'POL', avalanche: 'AVAX', optimism: 'ETH' };
+      if (rpcs.length) {
+        const weiHex = await rpcCallAny(rpcs, 'eth_getBalance', [creator, 'latest']);
+        balanceText = (Number(BigInt(weiHex)) / 1e18).toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' ' + (symbols[pair.chainId] || '');
+      }
+      const fetchTxs = async (sort) => {
+        const out = await explorerGet(pair.chainId, { module: 'account', action: 'txlist', address: creator, sort, page: '1', offset: '100' }, headers);
+        return Array.isArray(out.json?.result) ? out.json.result : [];
+      };
+      const [ascTxs, descTxs] = await Promise.all([fetchTxs('asc'), fetchTxs('desc')]);
+      const seen = new Map();
+      for (const tx of [...ascTxs, ...descTxs]) if (tx.contractAddress && String(tx.contractAddress).length >= 10) seen.set(String(tx.contractAddress).toLowerCase(), tx);
+      const creations = [...seen.values()].sort((a, b) => Number(b.timeStamp) - Number(a.timeStamp)).slice(0, 5);
+      const scout = BLOCKSCOUT[pair.chainId];
+      const out = [];
+      for (const tx of creations) {
+        let symbol = null;
+        if (scout) { try { const j = await (await fetch(scout + '/api/v2/tokens/' + tx.contractAddress, { headers })).json(); symbol = j && j.symbol ? j.symbol : null; } catch { symbol = null; } }
+        out.push({ address: tx.contractAddress, symbol, time: Number(tx.timeStamp) || null });
+      }
+      return { available: true, balanceText, creations: out, count: seen.size, source: process.env.ETHERSCAN_API_KEY ? 'Etherscan' : 'Blockscout' };
+    }
+    const rpc = solanaRpcUrl();
+    const bal = await rpcCall(rpc, 'getBalance', [creator]);
+    balanceText = ((bal?.value || 0) / 1e9).toLocaleString('en-US', { maximumFractionDigits: 4 }) + ' SOL';
+    const sigs = await rpcCall(rpc, 'getSignaturesForAddress', [creator, { limit: 50 }]);
+    const ok = (Array.isArray(sigs) ? sigs : []).filter((s) => !s.err).slice(0, 12);
+    const mints = [];
+    for (const sig of ok) {
+      try {
+        const tx = await rpcCall(rpc, 'getTransaction', [sig.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]);
+        const all = [...(tx?.transaction?.message?.instructions || []), ...((tx?.meta?.innerInstructions || []).flatMap((g) => g.instructions || []))];
+        for (const ix of all) {
+          const type = ix.parsed?.type;
+          if ((type === 'initializeMint' || type === 'initializeMint2') && ix.parsed?.info?.mint) mints.push({ address: ix.parsed.info.mint, symbol: null, time: sig.blockTime || null });
+          if (ix.programId === '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P' && ix.accounts && ix.accounts[0]) mints.push({ address: ix.accounts[0], symbol: null, time: sig.blockTime || null });
+        }
+      } catch { /* skip one tx */ }
+    }
+    const unique = [...new Map(mints.map((m) => [m.address, m])).values()].slice(0, 5);
+    return { available: true, balanceText, creations: unique, count: unique.length, source: solanaSourceLabel() };
+  } catch { return { available: false, balanceText, creations: [], source: '' }; }
 }
 async function fetchOhlcv(network, poolAddress, cfg) {
   const res = await fetch('https://api.geckoterminal.com/api/v2/networks/' + network + '/pools/' + encodeURIComponent(poolAddress) + '/ohlcv/' + cfg[0] + '?aggregate=' + cfg[1] + '&limit=' + cfg[2]);
@@ -516,4 +590,4 @@ async function fetchChart(pair, range) {
     return [];
   } catch { return []; }
 }
-module.exports = { num, detectMode, isEvm, isSolana, fetchSecurity, fetchQuoter, fetchEarlyAnalysis, scorePair, fetchChart };
+module.exports = { num, detectMode, isEvm, isSolana, fetchSecurity, fetchQuoter, fetchEarlyAnalysis, fetchCreatorHistory, scorePair, fetchChart };
