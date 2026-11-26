@@ -266,7 +266,9 @@ function scorePair(pair, pairs, security, quoter, early) {
   return { score, rawScore, cap, capReason, bias, confidence, executable, execution, caps, facts, factors, sniper, early: early || null, rugpull, chance, quoter, parts: { liquidityScore, momentumScore, marketScore, riskScore } };
 }
 
-function bar(label, value) { return '<div class="bar-row"><div class="bar-label"><span>' + esc(label) + '</span><b>' + Math.round(value) + '</b></div><div class="bar"><i style="width:' + clamp(value) + '%"></i></div></div>'; }
+function toneFor(value, kind) { const v = clamp(value); if (kind === 'rug') return v >= 45 ? 'bad' : v >= 25 ? 'warn' : 'good'; if (kind === 'chance') return v >= 55 ? 'good' : v >= 40 ? 'warn' : 'bad'; return v >= 70 ? 'good' : v >= 45 ? 'warn' : 'bad'; }
+function ringColor(score) { return score >= 70 ? '#2ee06f' : score >= 45 ? '#f5b83d' : '#ff5c5c'; }
+function bar(label, value, kind) { return '<div class="bar-row"><div class="bar-label"><span>' + esc(label) + '</span><b>' + Math.round(value) + '</b></div><div class="bar"><i class="tone-' + toneFor(value, kind) + '" style="width:' + clamp(value) + '%"></i></div></div>'; }
 function factorCard(factor) {
   return '<article class="factor-card"><div class="factor-head"><b>' + esc(factor.label) + '</b><span>' + factor.score + '/100 · bobot ' + factor.weight + '% · ' + factor.points + ' poin</span></div>' + bar(factor.label, factor.score) + '<ul>' + factor.notes.map((note) => '<li>' + esc(note) + '</li>').join('') + '</ul></article>';
 }
@@ -292,9 +294,9 @@ function render(pair, scored) {
   $('result').innerHTML = '<div class="dashboard">' +
     '<div class="token-head"><div class="token-title">' + (pair.info?.imageUrl ? '<img src="' + esc(pair.info.imageUrl) + '" alt="" />' : '') + '<div><h2>' + esc(token.name || 'Token') + ' <span class="muted">' + esc(token.symbol || '') + '</span></h2><p>' + esc(pair.chainId) + ' · ' + esc(pair.dexId || 'DEX') + (quoteSymbol ? ' · ' + esc(quoteSymbol) : '') + ' · Pair age ' + ageText(pair) + '</p><p><a href="' + esc(pair.url || '#') + '" target="_blank" rel="noreferrer">Lihat pair di DexScreener</a> · Pair ' + addressLink(pair.chainId, pair.pairAddress) + '</p></div></div>' +
     '<label>Pair <select id="pairSelect">' + pairOptions + '</select></label></div>' +
-    '<div class="score-grid"><div><div class="score-ring" style="--score:' + scored.score + '"><div><span><b>' + scored.score + '</b><br>Score</span></div></div></div><div>' +
+    '<div class="score-grid"><div><div class="score-ring" style="--score:' + scored.score + ';--ring:' + ringColor(scored.score) + '"><div><span><b>' + scored.score + '</b><br>Score</span></div></div></div><div>' +
     '<div class="badges"><span class="badge ' + (scored.bias === 'Naik' ? 'good' : scored.bias === 'Turun' ? 'bad' : 'warn') + '">Bias ' + scored.bias + '</span><span class="badge">Confidence ' + scored.confidence + '</span><span class="badge ' + (scored.executable ? 'good' : 'bad') + '">' + scored.execution.status + '</span><span class="badge ' + (rug.level === 'Rendah' ? 'good' : rug.level === 'Sedang' ? 'warn' : 'bad') + '">Rugpull ' + esc(rug.level) + ' ' + rug.points + '/100</span>' + (chance ? '<span class="badge ' + (chance.upPct >= 55 ? 'good' : chance.upPct >= 40 ? 'warn' : 'bad') + '">Naik 24j ' + chance.upPct + '% · &gt;5% ' + chance.up5Pct + '%</span>' : '') + '</div>' +
-    '<p class="execution-detail">' + esc(scored.execution.detail) + '</p>' + capHtml + '<div class="score-indicators">' + bar('Rugpull Risk', rug.points) + (chance ? bar('Estimasi naik 24 jam', chance.upPct) : '') + '</div></div></div>' +
+    '<p class="execution-detail">' + esc(scored.execution.detail) + '</p>' + capHtml + '<div class="score-indicators">' + bar('Rugpull Risk', rug.points, 'rug') + (chance ? bar('Estimasi naik 24 jam', chance.upPct, 'chance') : '') + '</div></div></div>' +
     '<div class="factor-grid">' + scored.factors.map(factorCard).join('') + '</div>' +
     '<div class="metrics">' +
     '<div class="metric"><span>Price</span><b>' + money(pair.priceUsd) + '</b></div>' +
