@@ -52,7 +52,7 @@ function normalizeHolders(security) {
   const holders = security?.holders || security?.holder || [];
   if (!Array.isArray(holders)) return [];
   return holders.map((h) => ({
-    address: firstValue(h, ['address', 'holder_address', 'wallet']) || '',
+    address: firstValue(h, ['address', 'account', 'holder_address', 'wallet', 'owner', 'token_account']) || '',
     percent: pctValue(firstValue(h, ['percent', 'percentage', 'balance_percent', 'share'])),
     isContract: boolValue(firstValue(h, ['is_contract', 'isContract', 'contract'])),
     isLocked: boolValue(firstValue(h, ['is_locked', 'isLocked', 'locked']))
@@ -69,7 +69,7 @@ function securityFacts(security) {
   const bundleHolders = sortedNonContract.length && sortedNonContract[0].percent > 5 ? sortedNonContract.slice(1) : sortedNonContract;
   const bundleSharePct = bundleHolders.length ? bundleHolders.reduce((sum, h) => sum + h.percent, 0) : null;
   const bundleWalletCount = bundleHolders.length;
-  const creatorPctRaw = pctValue(firstValue(security, ['creator_percent', 'creatorPercent', 'owner_percent']));
+  const creatorPctRaw = pctValue(firstValue(security, ['creator_percent', 'creatorPercent', 'owner_percent']) ?? (Array.isArray(security.creators) && security.creators[0] ? firstValue(security.creators[0], ['share', 'percent']) : null));
   const creatorPct = Number.isFinite(creatorPctRaw) ? creatorPctRaw : null;
   const honeypot = boolValue(firstValue(security, ['is_honeypot', 'honeypot'])) === true;
   const cannotSellAll = boolValue(firstValue(security, ['cannot_sell_all', 'cannotSellAll'])) === true;
@@ -107,7 +107,7 @@ function securityFacts(security) {
   if (bundleSharePct) notes.push(bundleSharePct < 20 ? 'Indikasi bundle ringan: ±' + bundleSharePct.toFixed(1) + '% supply di cluster wallet serupa (heuristik).' : 'Indikasi bundle: ±' + bundleSharePct.toFixed(1) + '% supply di wallet non-kontrak berukuran mirip (heuristik).');
   if (mintable) notes.push('Mint authority masih aktif menurut GoPlus.');
   if (!notes.length) notes.push('Tidak ada red flag besar dari data GoPlus yang tersedia.');
-  return { available: true, honeypot, cannotSellAll, creatorPct, creatorAddress: firstValue(security, ['creator_address', 'creatorAddress']) || '', ownerAddress: firstValue(security, ['owner_address', 'ownerAddress']) || '', top10Pct, top10NonContractPct, bundleSharePct, bundleWalletCount, holderCount: Number.isFinite(holderCountRaw) ? holderCountRaw : null, mintable, proxy, openSource, buyTaxPct, sellTaxPct, mintAuthorityActive, freezeAuthorityActive, lpLockedPct, lpBurnedPct, topHolders, notes };
+  return { available: true, honeypot, cannotSellAll, creatorPct, creatorAddress: firstValue(security, ['creator_address', 'creatorAddress']) || (Array.isArray(security.creators) && security.creators[0] ? firstValue(security.creators[0], ['address', 'account']) || '' : ''), ownerAddress: firstValue(security, ['owner_address', 'ownerAddress']) || '', top10Pct, top10NonContractPct, bundleSharePct, bundleWalletCount, holderCount: Number.isFinite(holderCountRaw) ? holderCountRaw : null, mintable, proxy, openSource, buyTaxPct, sellTaxPct, mintAuthorityActive, freezeAuthorityActive, lpLockedPct, lpBurnedPct, topHolders, notes };
 }
 
 function scorePair(pair, pairs, security, quoter, early) {
