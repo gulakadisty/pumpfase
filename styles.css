@@ -331,3 +331,11 @@ th, td { padding: 5px 0; font-size: 13px; }
 .conclusion { margin: 2px 0 12px; font-size: 15px; line-height: 1.5; color: #eef6ef; font-weight: 600; }
 
 .ring-risk { color: #ff5c5c; font-weight: 800; font-size: 15px; letter-spacing: .02em; }
+
+.bar i.tone-high { background: linear-gradient(90deg, #e06a1f, #ff8a3d); }
+.bar i.tone-critical { background: linear-gradient(90deg, #d63a3a, #ff5c5c); }
+.risk-level { font-weight: 800; }
+.risk-low { color: #2ee06f; }
+.risk-medium { color: #f5b83d; }
+.risk-high { color: #ff8a3d; }
+.risk-critical { color: #ff5c5c; }
